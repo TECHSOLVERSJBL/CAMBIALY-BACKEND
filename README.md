@@ -77,7 +77,7 @@ Respuesta (**JSON**):
 }
 ```
 
-Plan de Desarrollo (Cronograma de 2 Semanas)
+## Plan de Desarrollo (Cronograma de 2 Semanas)
 
 #### Semana 1: Extracción y Lógica Central (Backend Puro) 
 
@@ -135,8 +135,39 @@ Este comando descargará el entorno de Python, instalará las dependencias y eje
 
 Si ejecutaste el comando normal, presiona Ctrl + C en tu terminal. Si lo corriste en segundo plano, ejecuta: docker-compose down
 
-### Probar la **API**
+### Probar la **API** Y DIAGRAMAS
 
 Sin importar si usaste el método tradicional o Docker, una vez que el servidor esté corriendo, abre tu navegador web y visita: [http://**127**.0.0.1:**8000**/docs](https://[www.google.com/search?q=http://**127**.0.0.1:**8000**/docs](https://www.google.com/search?q=http://**127**.0.0.1:**8000**/docs))
 
 Allí encontrarás la interfaz gráfica de Swagger, donde podrás probar todas las rutas y enviar datos de prueba a la calculadora fácilmente.
+
+
+![DIAGRAMA1](https://i.imgur.com/FxltGeZ.png)
+![DIAGRAMA2](https://i.imgur.com/hnYeE1E.png)
+
+## ❓ FAQ: Decisiones Técnicas del Proyecto
+
+Este documento responde a las dudas frecuentes sobre por qué elegimos este stack tecnológico para nuestra calculadora de divisas.
+
+---
+
+### 1. ¿Por qué FastAPI y no otro framework como Flask o Django?
+Elegimos **FastAPI** por tres razones críticas para este proyecto:
+* **Velocidad y Concurrencia:** FastAPI es asíncrono. Esto permite que nuestra API maneje cientos de peticiones a la vez sin bloquearse, algo vital si la app se hace viral.
+* **Documentación Automática:** FastAPI nos da una página web interactiva (en `/docs`) que sirve como manual técnico. Cualquier persona puede ver cómo funciona la API y probarla sin escribir código.
+* **Validación de Datos:** Con solo definir qué esperamos recibir, FastAPI rechaza automáticamente cualquier dato mal formateado, evitándonos errores humanos en la base de datos.
+
+### 2. ¿Por qué necesitamos Redis? ¿No basta con una base de datos normal?
+Usar una base de datos tradicional (como PostgreSQL o MySQL) sería demasiado lento para este caso de uso.
+* **Velocidad Extrema:** Redis guarda los datos en la memoria RAM, no en el disco duro. La respuesta es en milisegundos.
+* **Caché Inteligente:** Como las tasas de cambio no cambian cada segundo, guardamos el resultado del scraper en Redis. Así, el usuario siempre recibe una respuesta instantánea y nosotros no sobrecargamos las webs externas (BCV/Binance).
+* **TTL (Time to Live):** Redis permite configurar que un dato se "autodestruya" o refresque tras X tiempo, automatizando la actualización de las tasas.
+
+### 3. ¿Por qué incluimos "Tareas en Segundo Plano" (Background Tasks)?
+Este es el "tercer pilar" de nuestra arquitectura.
+* **Independencia del Usuario:** Cuando un usuario pide un cálculo, no queremos que su app se quede "cargando" mientras nuestra API busca en la web del BCV. 
+* **Flujo Fluido:** Las tareas en segundo plano permiten que nuestra API se encargue de actualizar las tasas (el "trabajo sucio") independientemente de si el usuario está consultando algo en ese momento.
+* **Fiabilidad:** Si el servidor del BCV está lento o se cae, nuestro sistema no falla; simplemente sigue entregando la última tasa guardada en Redis.
+
+### 4. ¿Es realmente necesario este nivel de complejidad para algo tan "pequeño"?
+* **La respuesta corta es: Sí.** * Lo que parece una "calculadora simple" se convierte en un problema de **rendimiento** cuando 100 personas preguntan al mismo tiempo. Al estructurarlo así desde el día 1, garantizamos que la app sea estable, profesional y escalable. Además, estamos usando herramientas que son estándar en la industria, lo que hace que nuestro código sea muy fácil de mantener.
