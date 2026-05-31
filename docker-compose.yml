@@ -6,8 +6,8 @@ services:
     volumes:
       - .:/app
     environment:
-      - REDIS_URL=upstash_password_here
-      - REDIS_PASSWORD=upstash_password_here
+      - UPSTASH_REDIS_URL=${UPSTASH_REDIS_REST_URL}
+      - UPSTASH_REDIS_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
     depends_on:
       - redis
 
