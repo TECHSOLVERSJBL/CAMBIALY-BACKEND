@@ -5,7 +5,7 @@ import logging
 from abc import ABC, abstractmethod
 from bs4 import BeautifulSoup
 from datetime import datetime
-from app.database import redis_db
+from app.database import redis_client as redis_db
 
 # Configuración de logs para monitorear los workers
 logging.basicConfig(level=logging.INFO)
@@ -105,10 +105,81 @@ class BCVWorker(BaseRateWorker):
 class BinanceWorker(BaseRateWorker):
     def __init__(self):
         super().__init__(redis_key="rates:binance")
-        # Placeholder for Binance P2P API or similar
-        self.api_url = "https://p2p.binance.com/bapi/c2c/v2/public/c2c/adv/quoted"
+        # Endpoint correcto para Binance P2P
+        self.api_url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
 
     async def fetch_rate(self) -> dict:
-        """Logic for Binance P2P (Placeholder for now)."""
-        # Aquí implementaremos luego la lógica de Binance
-        return {"USDT": 0.00}  # Mock data
+        """
+        Obtiene la tasa de cambio USDT/VES desde Binance P2P.
+        Busca el mejor precio de VENTA (SELL) de USDT para recibir bolívares.
+        """
+        try:
+            # Parámetros para buscar ofertas de venta de USDT en bolívares
+            payload = {
+                "asset": "USDT",           # Criptomoneda a vender
+                "fiat": "VES",             # Moneda local (Bolívares Venezolanos)
+                "tradeType": "SELL",       # SELL = vendes USDT, recibes VES
+                "page": 1,
+                "rows": 5,                 # Traemos las 5 mejores ofertas
+                "payTypes": [],            # Sin filtrar por método de pago
+                "publisherType": None,     # Sin filtrar por tipo de publicador
+                "merchantCheck": True      # Verificar merchant
+            }
+            
+            # Headers para evitar bloqueos
+            headers = {
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json",
+                "Accept-Language": "es-ES,es;q=0.9",
+                "Referer": "https://p2p.binance.com/"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                logger.info(f"Fetching Binance P2P rates from {self.api_url}")
+                response = await client.post(
+                    self.api_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=15.0
+                )
+                
+                if response.status_code != 200:
+                    logger.error(f"Binance P2P returned status {response.status_code}")
+                    raise Exception(f"Binance P2P returned status {response.status_code}")
+                
+                data = response.json()
+                
+                # Verificar código de respuesta
+                if data.get("code") != "000000":
+                    logger.error(f"Binance P2P API error code: {data.get('code')}")
+                    raise Exception(f"Binance P2P API error: {data.get('message', 'Unknown error')}")
+                
+                # Verificar que hay datos
+                if not data.get("data") or len(data["data"]) == 0:
+                    logger.warning("No se encontraron ofertas en Binance P2P para VES")
+                    # Devolver último valor conocido? Por ahora lanzamos excepción
+                    raise Exception("No se encontraron ofertas en Binance P2P para VES")
+                
+                # Tomamos el mejor precio (primera oferta ordenada por mejor precio)
+                # Las ofertas vienen ordenadas por mejor precio automáticamente
+                first_offer = data["data"][0]
+                price = float(first_offer["adv"]["price"])
+                
+        
+                
+                
+                logger.info(f"Binance P2P USDT/VES rate: {price} Bs/USDT")
+                
+                # Devolvemos como USD para mantener consistencia con el resto de la API
+                return {"USD": round(price, 2)}
+                
+        except httpx.TimeoutException:
+            logger.error("Timeout al conectar con Binance P2P")
+            raise Exception("Timeout connecting to Binance P2P")
+        except httpx.RequestError as e:
+            logger.error(f"Error de red al conectar con Binance P2P: {str(e)}")
+            raise Exception(f"Network error: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error inesperado en BinanceWorker: {str(e)}")
+            raise
