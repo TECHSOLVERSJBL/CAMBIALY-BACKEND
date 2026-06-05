@@ -360,6 +360,41 @@ This is the "algorithm" that must be translated into code in the `services.py`. 
 
 ![DIAGRAM4](https://i.imgur.com/FTiyn5u.png)
 
+##  Guía de Despliegue en Producción (Render + Upstash)
+
+Esta sección documenta los pasos y decisiones para desplegar la API en la nube de forma gratuita.
+
+### 1. Base de datos: Upstash Redis
+- Crear una cuenta gratuita en [upstash.com](https://upstash.com).
+- Crear una base de datos Redis. El plan gratuito actual ofrece **500,000 comandos por mes** (suficiente para ~250,000 visitas).
+- **Importante**: En la configuración de la base de datos, desactivar el "Auto Upgrade" para evitar costos inesperados si se excede el límite.
+
+### 2. Despliegue de la API: Render
+- El proyecto está preparado para desplegarse en [render.com](https://render.com) usando el `Dockerfile`.
+- **Plan gratuito**: El servicio web se **duerme tras 15 minutos sin actividad**. Para mantenerlo activo 24/7, usar un servicio externo como [cron-job.org](https://cron-job.org) que haga ping a la URL `/health` cada 10 minutos.
+- **Variables de entorno necesarias** (configurar en el panel de Render):
+  | Variable | Valor | Obligatoria |
+  |----------|-------|-------------|
+  | `APP_ENV` | `production` | Sí |
+  | `UPSTASH_REDIS_REST_URL` | URL de tu base de datos Upstash | Sí |
+  | `UPSTASH_REDIS_REST_TOKEN` | Token de tu base de datos Upstash | Sí |
+
+### 3. Solución de problemas comunes en producción
+
+#### Error: `cannot import name 'Redis' from 'upstash_redis'`
+**Causa**: La librería `upstash-redis` cambió su API y la importación falla en algunos entornos.
+**Solución**: El `database.py` actual usa la librería estándar `redis` (con `import redis`) y configura la conexión SSL manualmente. Esta solución es más estable.
+
+#### Error: `Error Upstash: usando MockRedis`
+**Causa**: Las variables de entorno `APP_ENV=production`, `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` no están configuradas o tienen valores incorrectos.
+**Solución**: Verificar en el panel de Render que las variables existan y sean correctas. Tras corregirlas, hacer un "Manual Deploy" para que se apliquen.
+
+### 4. Desarrollo local (sin Upstash)
+Para desarrollo local, **no se necesita configurar nada**. Por defecto, `APP_ENV=development` y la API usará `MockRedis` (caché en memoria). Así cualquier desarrollador puede clonar y ejecutar `docker-compose up --build` sin dependencias externas.
+
+### 5. Actualizaciones futuras
+Cada vez que se suben cambios a la rama `main` en GitHub, Render reconstruye y despliega automáticamente la nueva versión. No se requiere intervención manual.
+
 
 <!-- TOC --><a name="-faq-decisiones-técnicas-del-proyecto"></a>
 ## ❓ FAQ: Technical Project Decisions
