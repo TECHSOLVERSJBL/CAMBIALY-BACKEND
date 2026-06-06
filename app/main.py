@@ -1,30 +1,26 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from typing import Optional, Literal, List, Dict, Any
 from app.schemas import CalculationRequest
 from app.database import redis_client
 from app.scrapers import BCVWorker, BinanceWorker
+from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker
 import json
 
 app = FastAPI(title="AhorraVE API - Calculadora Cambiaria")
 
-async def run_bcv_worker():
-    """Ejecuta el worker del BCV"""
-    worker = BCVWorker()
-    result = await worker.run()
-    return result
-
-async def run_binance_worker():
-    """Ejecuta el worker de Binance"""
-    worker = BinanceWorker()
-    result = await worker.run()
-    return result
-
 @app.on_event("startup")
 async def startup_event():
-    """Ejecuta los workers al iniciar la API"""
+    """Ejecuta los workers al iniciar la API y arranca la automatización"""
     print("Actualizando tasas iniciales...")
+    
+    # Ejecución inicial para garantizar que haya data en caché
     await run_bcv_worker()
     await run_binance_worker()
-    print("API lista para usar")
+    
+    # Delegamos toda la lógica de tiempos al módulo scheduler
+    start_background_tasks()
+    
+    print("API lista para usar y automatización delegada correctamente.")
 
 @app.get("/")
 async def root():
@@ -36,6 +32,46 @@ async def health_check():
 
 # ========== ENDPOINTS ==========
 
+
+
+@app.get("/api/v1/rates/history/{category}")
+async def get_rates_history(
+    category: Literal["bcv", "binance"],
+    limit: int = Query(default=20, gt=0, le=100),
+    currency: Optional[str] = Query(default=None)
+):
+    history_key = f"history:rates:{category}"
+    raw_history = redis_client.zrevrange(history_key, 0, limit - 1)
+    
+    if not raw_history:
+        return {"category": category, "count": 0, "history": []}
+        
+    parsed_history = [json.loads(item) for item in raw_history]
+    
+    if currency:
+        target = currency.upper().strip()
+        filtered = [
+            {
+                "last_updated": record["last_updated"],
+                "rate": record["rates"][target]
+            }
+            for record in parsed_history 
+            if target in record.get("rates", {})
+        ]
+        
+        return {
+            "category": category,
+            "currency": target,
+            "count": len(filtered),
+            "history": filtered
+        }
+    
+    return {
+        "category": category,
+        "count": len(parsed_history),
+        "history": parsed_history
+    }
+    
 @app.get("/api/v1/rates/bcv")
 async def get_bcv_rates():
     """Obtiene tasas del BCV desde Redis"""
