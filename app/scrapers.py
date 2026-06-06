@@ -34,15 +34,29 @@ class BaseRateWorker(ABC):
             rates = await self.fetch_rate()
 
             if rates:
+                current_time = datetime.now()
                 payload = {
                     "source": self.__class__.__name__.replace("Worker", ""),
-                    "last_updated": datetime.now().isoformat() + "Z",
+                    "last_updated": current_time.isoformat() + "Z",
                     "rates": rates
                 }
-                # Save to Redis
-                self.redis.set(self.redis_key, json.dumps(payload))
-                logger.info(f"Successfully updated {self.redis_key}")
+                
+                payload_json = json.dumps(payload)
+                
+                # 1. Guardar el estado actual en Redis (como ya lo hacías)
+                self.redis.set(self.redis_key, payload_json)
+                
+                # 2. Guardar en el Historial Ordenado (NUEVO)
+                # Usamos el timestamp actual como score para mantener el orden cronológico
+                timestamp = int(current_time.timestamp())
+                history_key = f"history:{self.redis_key}"
+                
+                # redis-py espera un diccionario con la estructura {valor: score}
+                self.redis.zadd(history_key, {payload_json: timestamp})
+                
+                logger.info(f"Successfully updated current rate and history for {self.redis_key}")
                 return payload
+                
         except Exception as e:
             logger.error(f"Error in {self.__class__.__name__}: {str(e)}")
             return None
