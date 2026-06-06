@@ -29,13 +29,20 @@
    * [Diagrama de flujo de datos](#diagrama-de-flujo-de-datos)
    * [Diagrama de Modelo de Datos (Redis)](#diagrama-de-modelo-de-datos-redis)
    * [Diagrama de Decisión de Normalización](#diagrama-de-decisión-de-normalización)
+- [Guía de Despliegue en Producción (Render + Upstash)](#guía-de-despliegue-en-producción-render-upstash)
+   * [1. Base de datos: Upstash Redis](#1-base-de-datos-upstash-redis)
+   * [2. Despliegue de la API: Render](#2-despliegue-de-la-api-render)
+   * [3. Solución de problemas comunes en producción](#3-solución-de-problemas-comunes-en-producción)
+      + [Error: `cannot import name 'Redis' from 'upstash_redis'`](#error-cannot-import-name-redis-from-upstash_redis)
+      + [Error: `Error Upstash: usando MockRedis`](#error-error-upstash-usando-mockredis)
+   * [4. Desarrollo local (sin Upstash)](#4-desarrollo-local-sin-upstash)
+   * [5. Actualizaciones futuras](#5-actualizaciones-futuras)
 - [❓ FAQ: Decisiones Técnicas del Proyecto](#-faq-decisiones-técnicas-del-proyecto)
    * [1. ¿Por qué FastAPI y no otro framework como Flask o Django?](#1-por-qué-fastapi-y-no-otro-framework-como-flask-o-django)
    * [2. ¿Por qué necesitamos Redis? ¿No basta con una base de datos normal?](#2-por-qué-necesitamos-redis-no-basta-con-una-base-de-datos-normal)
    * [3. ¿Por qué incluimos "Tareas en Segundo Plano" (Background Tasks)?](#3-por-qué-incluimos-tareas-en-segundo-plano-background-tasks)
    * [4. ¿Es realmente necesario este nivel de complejidad para algo tan "pequeño"?](#4-es-realmente-necesario-este-nivel-de-complejidad-para-algo-tan-pequeño)
    * [5. Cómo funcionan los scrapers?](#5-cómo-funcionan-los-scrapers)
-
 
 <!-- TOC end -->
 <!-- TOC --><a name="api-calculadora-de-conveniencia-cambiaria-vesusdeur"></a>
@@ -360,6 +367,48 @@ Este es el "algoritmo" que se debe traducir a código en el `services.py`. Es la
 
 ![DIAGRAMA4](https://i.imgur.com/FTiyn5u.png)
 
+<!-- TOC --><a name="guía-de-despliegue-en-producción-render-upstash"></a>
+##  Guía de Despliegue en Producción (Render + Upstash)
+
+Esta sección documenta los pasos y decisiones para desplegar la API en la nube de forma gratuita.
+
+<!-- TOC --><a name="1-base-de-datos-upstash-redis"></a>
+### 1. Base de datos: Upstash Redis
+- Crear una cuenta gratuita en [upstash.com](https://upstash.com).
+- Crear una base de datos Redis. El plan gratuito actual ofrece **500,000 comandos por mes** (suficiente para ~250,000 visitas).
+- **Importante**: En la configuración de la base de datos, desactivar el "Auto Upgrade" para evitar costos inesperados si se excede el límite.
+
+<!-- TOC --><a name="2-despliegue-de-la-api-render"></a>
+### 2. Despliegue de la API: Render
+- El proyecto está preparado para desplegarse en [render.com](https://render.com) usando el `Dockerfile`.
+- **Plan gratuito**: El servicio web se **duerme tras 15 minutos sin actividad**. Para mantenerlo activo 24/7, usar un servicio externo como [cron-job.org](https://cron-job.org) que haga ping a la URL `/health` cada 10 minutos.
+- **Variables de entorno necesarias** (configurar en el panel de Render):
+  | Variable | Valor | Obligatoria |
+  |----------|-------|-------------|
+  | `APP_ENV` | `production` | Sí |
+  | `UPSTASH_REDIS_REST_URL` | URL de tu base de datos Upstash | Sí |
+  | `UPSTASH_REDIS_REST_TOKEN` | Token de tu base de datos Upstash | Sí |
+
+<!-- TOC --><a name="3-solución-de-problemas-comunes-en-producción"></a>
+### 3. Solución de problemas comunes en producción
+
+<!-- TOC --><a name="error-cannot-import-name-redis-from-upstash_redis"></a>
+#### Error: `cannot import name 'Redis' from 'upstash_redis'`
+**Causa**: La librería `upstash-redis` cambió su API y la importación falla en algunos entornos.
+**Solución**: El `database.py` actual usa la librería estándar `redis` (con `import redis`) y configura la conexión SSL manualmente. Esta solución es más estable.
+
+<!-- TOC --><a name="error-error-upstash-usando-mockredis"></a>
+#### Error: `Error Upstash: usando MockRedis`
+**Causa**: Las variables de entorno `APP_ENV=production`, `UPSTASH_REDIS_REST_URL` y `UPSTASH_REDIS_REST_TOKEN` no están configuradas o tienen valores incorrectos.
+**Solución**: Verificar en el panel de Render que las variables existan y sean correctas. Tras corregirlas, hacer un "Manual Deploy" para que se apliquen.
+
+<!-- TOC --><a name="4-desarrollo-local-sin-upstash"></a>
+### 4. Desarrollo local (sin Upstash)
+Para desarrollo local, **no se necesita configurar nada**. Por defecto, `APP_ENV=development` y la API usará `MockRedis` (caché en memoria). Así cualquier desarrollador puede clonar y ejecutar `docker-compose up --build` sin dependencias externas.
+
+<!-- TOC --><a name="5-actualizaciones-futuras"></a>
+### 5. Actualizaciones futuras
+Cada vez que se suben cambios a la rama `main` en GitHub, Render reconstruye y despliega automáticamente la nueva versión. No se requiere intervención manual.
 
 <!-- TOC --><a name="-faq-decisiones-técnicas-del-proyecto"></a>
 ## ❓ FAQ: Decisiones Técnicas del Proyecto
