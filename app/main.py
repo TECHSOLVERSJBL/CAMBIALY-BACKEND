@@ -1,5 +1,6 @@
 import json
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
@@ -11,6 +12,26 @@ from typing import Optional, Literal
 # Configuración del Logger
 logger = logging.getLogger("uvicorn.error")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- CÓDIGO DE INICIO ---
+    logger.info("Iniciando servicios de AhorraVE...")
+
+    # 1. Tareas de carga inicial
+    await run_bcv_worker()
+    await run_binance_worker()
+
+    # 2. Iniciar el scheduler y guardarlo en el estado de la app
+    app.state.scheduler = start_background_tasks()
+
+    logger.info("Scheduler y servicios iniciados correctamente.")
+    yield  # Aquí es donde corre tu API
+
+    # --- CÓDIGO DE CIERRE ---
+    logger.info("Apagando servicios de AhorraVE...")
+    app.state.scheduler.shutdown()
+
 app = FastAPI(
     title="AhorraVE API",
     description="""
@@ -20,7 +41,8 @@ app = FastAPI(
     entre dos pagos (ej: USD vs VES).
     """,
     version="1.0.0",
-    docs_url="/docs"
+    docs_url="/docs",
+    lifespan=lifespan
 )
 
 # ========== MANEJADORES DE ERRORES ==========
@@ -82,6 +104,21 @@ async def get_rates_history(
     parsed = [json.loads(item) for item in raw_history]
     return {"category": category, "history": parsed}
 
+@app.get("/debug/scheduler", tags=["Sistema"])
+async def get_scheduler_status(request: Request):
+    """Retorna el estado de los trabajos programados."""
+    scheduler = request.app.state.scheduler
+    jobs = scheduler.get_jobs()
+    status = []
+    for job in jobs:
+        status.append({
+            "id": job.id,
+            "next_run": str(job.next_run_time),
+            "func": job.func_ref
+        })
+    return {"jobs": status}
+
+
 @app.post("/api/v1/calcular", tags=["Calculadora"])
 async def calculate(request: CalculationRequest):
     """
@@ -98,7 +135,7 @@ async def calculate(request: CalculationRequest):
     
     rates = json.loads(rates_data) if isinstance(rates_data, str) else rates_data
     rates = rates.get("rates", {})
-    usd_rate = float(rates.get("USD") or rates.get("USDT", 41.50))
+    usd_rate = float(rates.get("USD") or rates.get("USDT", 0.00))
     
     def to_ves(price, type_):
         types = {"USD": price * usd_rate, "VES": price, "EUR": price * float(rates.get("EUR", usd_rate * 1.08))}
