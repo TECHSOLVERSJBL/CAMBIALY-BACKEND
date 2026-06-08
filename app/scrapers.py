@@ -2,10 +2,13 @@ import httpx
 import re
 import json
 import logging
+import asyncio
+import random
 from abc import ABC, abstractmethod
 from bs4 import BeautifulSoup
 from datetime import datetime
 from app.database import redis_client as redis_db
+from app.services import fetch_yadio_rate
 
 # Configuración de logs para monitorear los workers
 logging.basicConfig(level=logging.INFO)
@@ -40,23 +43,24 @@ class BaseRateWorker(ABC):
                     "last_updated": current_time.isoformat() + "Z",
                     "rates": rates
                 }
-                
+
                 payload_json = json.dumps(payload)
-                
-                # 1. Guardar el estado actual en Redis (como ya lo hacías)
+
+                # 1. Guardar el estado actual en Redis
                 self.redis.set(self.redis_key, payload_json)
-                
-                # 2. Guardar en el Historial Ordenado (NUEVO)
-                # Usamos el timestamp actual como score para mantener el orden cronológico
+
+                # 2. Guardar en el Historial Ordenado
                 timestamp = int(current_time.timestamp())
                 history_key = f"history:{self.redis_key}"
-                
-                # redis-py espera un diccionario con la estructura {valor: score}
+
                 self.redis.zadd(history_key, {payload_json: timestamp})
-                
+
+                # [Opcional] Puedes añadir la limpieza de historial aquí si lo deseas
+                # self.redis.zremrangebyrank(history_key, 0, -101)
+
                 logger.info(f"Successfully updated current rate and history for {self.redis_key}")
                 return payload
-                
+
         except Exception as e:
             logger.error(f"Error in {self.__class__.__name__}: {str(e)}")
             return None
@@ -72,7 +76,6 @@ class BCVWorker(BaseRateWorker):
         if not element:
             return None
 
-        # Priority containers based on BCV structure
         targets = [
             element.find('div', class_='centrado'),
             element.find('strong'),
@@ -93,14 +96,13 @@ class BCVWorker(BaseRateWorker):
 
     async def fetch_rate(self) -> dict:
         """Asynchronous scraping of the BCV website."""
-        async with httpx.AsyncClient(verify=False) as client:  # BCV often has SSL issues
+        async with httpx.AsyncClient(verify=False) as client:
             response = await client.get(self.url, timeout=30.0)
             if response.status_code != 200:
                 raise Exception(f"BCV returned status {response.status_code}")
 
             soup = BeautifulSoup(response.text, 'html.parser')
 
-            # Logic for USD and EUR using IDs
             usd_element = soup.find(id="dolar")
             eur_element = soup.find(id="euro")
 
@@ -109,7 +111,6 @@ class BCVWorker(BaseRateWorker):
                 "EUR": self._extract_number(eur_element)
             }
 
-            # Basic validation
             if not rates["USD"]:
                 logger.warning("Could not find USD rate, check BCV HTML structure.")
 
@@ -119,36 +120,42 @@ class BCVWorker(BaseRateWorker):
 class BinanceWorker(BaseRateWorker):
     def __init__(self):
         super().__init__(redis_key="rates:binance")
-        # Endpoint correcto para Binance P2P
         self.api_url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+        # User-agents rotativos para disminuir huella de bot
+        self.user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ]
 
     async def fetch_rate(self) -> dict:
         """
         Obtiene la tasa de cambio USDT/VES desde Binance P2P.
-        Busca el mejor precio de VENTA (SELL) de USDT para recibir bolívares.
+        Si ocurre cualquier error o bloqueo, ejecuta el fallback seguro de Yadio.
         """
         try:
-            # Parámetros para buscar ofertas de venta de USDT en bolívares
+            # Jitter dinámico para no realizar peticiones en intervalos robóticos idénticos
+            await asyncio.sleep(random.uniform(1, 8))
+
             payload = {
-                "asset": "USDT",           # Criptomoneda a vender
-                "fiat": "VES",             # Moneda local (Bolívares Venezolanos)
-                "tradeType": "SELL",       # SELL = vendes USDT, recibes VES
+                "asset": "USDT",
+                "fiat": "VES",
+                "tradeType": "SELL",
                 "page": 1,
-                "rows": 5,                 # Traemos las 5 mejores ofertas
-                "payTypes": [],            # Sin filtrar por método de pago
-                "publisherType": None,     # Sin filtrar por tipo de publicador
-                "merchantCheck": True      # Verificar merchant
+                "rows": 5,
+                "payTypes": [],
+                "publisherType": None,
+                "merchantCheck": True
             }
-            
-            # Headers para evitar bloqueos
+
             headers = {
                 "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "User-Agent": random.choice(self.user_agents),
                 "Accept": "application/json",
                 "Accept-Language": "es-ES,es;q=0.9",
                 "Referer": "https://p2p.binance.com/"
             }
-            
+
             async with httpx.AsyncClient() as client:
                 logger.info(f"Fetching Binance P2P rates from {self.api_url}")
                 response = await client.post(
@@ -157,43 +164,40 @@ class BinanceWorker(BaseRateWorker):
                     headers=headers,
                     timeout=15.0
                 )
-                
+
                 if response.status_code != 200:
-                    logger.error(f"Binance P2P returned status {response.status_code}")
                     raise Exception(f"Binance P2P returned status {response.status_code}")
-                
+
                 data = response.json()
-                
-                # Verificar código de respuesta
+
                 if data.get("code") != "000000":
-                    logger.error(f"Binance P2P API error code: {data.get('code')}")
                     raise Exception(f"Binance P2P API error: {data.get('message', 'Unknown error')}")
-                
-                # Verificar que hay datos
+
                 if not data.get("data") or len(data["data"]) == 0:
-                    logger.warning("No se encontraron ofertas en Binance P2P para VES")
-                    # Devolver último valor conocido? Por ahora lanzamos excepción
-                    raise Exception("No se encontraron ofertas en Binance P2P para VES")
-                
-                # Tomamos el mejor precio (primera oferta ordenada por mejor precio)
-                # Las ofertas vienen ordenadas por mejor precio automáticamente
-                first_offer = data["data"][0]
+                    raise Exception("No se encontraron ofertas en Binance P2P para VES (posible baneo/bloqueo)")
+
+                first_offer = data["data"][1]
                 price = float(first_offer["adv"]["price"])
-                
-        
-                
-                
-                logger.info(f"Binance P2P USDT/VES rate: {price} Bs/USDT")
-                
-                # Devolvemos como USD para mantener consistencia con el resto de la API
+
+                logger.info(f"Binance P2P USDT/VES rate obtenido exitosamente: {price} Bs/USDT")
                 return {"USD": round(price, 2)}
-                
-        except httpx.TimeoutException:
-            logger.error("Timeout al conectar con Binance P2P")
-            raise Exception("Timeout connecting to Binance P2P")
-        except httpx.RequestError as e:
-            logger.error(f"Error de red al conectar con Binance P2P: {str(e)}")
-            raise Exception(f"Network error: {str(e)}")
-        except Exception as e:
-            logger.error(f"Error inesperado en BinanceWorker: {str(e)}")
-            raise
+
+        except Exception as err:
+            # MANEJO INTELIGENTE: Captura cualquier excepción (Network, Timeout, HTTP Error, JSON vacío)
+            # e invoca el fallback de servicios de manera transparente.
+            logger.warning(f"Error detectado en BinanceWorker ({str(err)}). Activando contingencia con Yadio.io...")
+            try:
+                backup_price = await fetch_yadio_rate()
+
+                # Si por alguna razón Yadio devuelve el valor de emergencia 0.0, lanzamos error
+                if backup_price <= 0.0:
+                    raise Exception("El servicio de fallback de Yadio retornó una tasa inválida o nula.")
+
+                logger.info(f"Tasa de reemplazo obtenida desde Yadio con éxito: {backup_price} Bs/USDT")
+                return {"USD": round(backup_price, 2)}
+
+            except Exception as fallback_err:
+                logger.error(f"Error crítico: El plan B (Yadio) también ha fallado: {str(fallback_err)}")
+                # Re-lanzamos la excepción para que el BaseRateWorker la registre y no guarde datos corruptos en Redis
+                raise Exception(
+                    f"Ambos servicios de tasas (Binance y Yadio) fallaron de forma consecutiva. Deteniendo flujo.")
