@@ -150,3 +150,10 @@ async def calculate(request: CalculationRequest):
         "savings": round(savings, 2),
         "details": {"a_ves": round(val_a, 2), "b_ves": round(val_b, 2)}
     }
+@app.get("/", tags=["Sistema"])
+async def root():
+    return {
+        "message": "Bienvenido a la API de AhorraVE",
+        "docs": "/docs",
+        "status": "healthy"
+    }
