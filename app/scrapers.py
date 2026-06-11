@@ -55,9 +55,6 @@ class BaseRateWorker(ABC):
 
                 self.redis.zadd(history_key, {payload_json: timestamp})
 
-                # [Opcional] Puedes añadir la limpieza de historial aquí si lo deseas
-                # self.redis.zremrangebyrank(history_key, 0, -101)
-
                 logger.info(f"Successfully updated current rate and history for {self.redis_key}")
                 return payload
 
@@ -131,6 +128,7 @@ class BinanceWorker(BaseRateWorker):
     async def fetch_rate(self) -> dict:
         """
         Obtiene la tasa de cambio USDT/VES desde Binance P2P.
+        Usa la TERCERA oferta (índice 2) para evitar precios anómalos.
         Si ocurre cualquier error o bloqueo, ejecuta el fallback seguro de Yadio.
         """
         try:
@@ -142,7 +140,7 @@ class BinanceWorker(BaseRateWorker):
                 "fiat": "VES",
                 "tradeType": "SELL",
                 "page": 1,
-                "rows": 5,
+                "rows": 10,  # Aumentado para tener suficientes ofertas
                 "payTypes": [],
                 "publisherType": None,
                 "merchantCheck": True
@@ -173,13 +171,18 @@ class BinanceWorker(BaseRateWorker):
                 if data.get("code") != "000000":
                     raise Exception(f"Binance P2P API error: {data.get('message', 'Unknown error')}")
 
-                if not data.get("data") or len(data["data"]) == 0:
-                    raise Exception("No se encontraron ofertas en Binance P2P para VES (posible baneo/bloqueo)")
+                ofertas_count = len(data.get("data", []))
+                if ofertas_count < 3:
+                    logger.warning(f"Solo se encontraron {ofertas_count} ofertas. Usando la última disponible.")
+                    oferta_idx = ofertas_count - 1
+                else:
+                    oferta_idx = 2  # TERCERA oferta (índice 2)
+                    logger.info(f"Usando la TERCERA oferta (índice {oferta_idx}) para evitar precios anómalos")
 
-                first_offer = data["data"][1]
-                price = float(first_offer["adv"]["price"])
+                oferta = data["data"][oferta_idx]
+                price = float(oferta["adv"]["price"])
 
-                logger.info(f"Binance P2P USDT/VES rate obtenido exitosamente: {price} Bs/USDT")
+                logger.info(f"Binance P2P USDT/VES rate obtenido exitosamente (oferta #{oferta_idx + 1}): {price} Bs/USDT")
                 return {"USD": round(price, 2)}
 
         except Exception as err:
