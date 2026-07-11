@@ -1,11 +1,10 @@
 # app/services.py
 import logging
+import httpx
 from app.database import redis_client
-
 # Usamos el logger de uvicorn para ver los mensajes en la consola de Docker
 logger = logging.getLogger("uvicorn.error")
-import httpx
-import logging
+
 
 async def fetch_yadio_rate():
     """uses USDT/VES rate from Yadio.io as backup."""

@@ -1,6 +1,5 @@
 # app/database.py 
 import os
-import json
 import redis
 from dotenv import load_dotenv
 
@@ -63,8 +62,6 @@ print(f"DEBUG: UPSTASH_TOKEN = {'SET' if UPSTASH_TOKEN else 'NO SET'}")
 
 if APP_ENV == "production" and UPSTASH_URL and UPSTASH_TOKEN:
     try:
-        # Usar redis-py en lugar de upstash_redis (más estable)
-        import redis
         
         # Parsear la URL de Upstash (formato: https://xxxx.upstash.io)
         # Extraer el host (quitar https:// y .upstash.io)
