@@ -1,5 +1,7 @@
 import json
 import logging
+import os
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
@@ -12,7 +14,16 @@ from typing import Optional, Literal
 # Configuración del Logger
 logger = logging.getLogger("uvicorn.error")
 
+APP_ENV = os.getenv("APP_ENV", "development")
+raw_origins = os.getenv("ALLOWED_ORIGINS", "")
+if raw_origins:
+    ALLOWED_ORIGINS = [o.strip() for o in raw_origins.split(",") if o.strip()]
+elif APP_ENV == "production":
+    ALLOWED_ORIGINS = []  # en producción sin explícitos → CORS restrictivo
+else:
+    ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
+logger.info(f"Modo: {APP_ENV} | CORS origins: {ALLOWED_ORIGINS}")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # --- CÓDIGO DE INICIO ---
@@ -45,6 +56,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
+# ========== Middleware CORS ==========
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 # ========== MANEJADORES DE ERRORES ==========
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
