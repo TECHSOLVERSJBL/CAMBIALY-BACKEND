@@ -8,8 +8,8 @@ services:
     environment:
       - UPSTASH_REDIS_URL=${UPSTASH_REDIS_REST_URL}
       - UPSTASH_REDIS_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
-      - REDIS_URL=upstash_password_here
-      - REDIS_PASSWORD=upstash_password_here
+      - LOCAL_REDIS_URL=${LOCAL_REDIS_URL}
+      - APP_ENV=${APP_ENV}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     depends_on:
       - redis

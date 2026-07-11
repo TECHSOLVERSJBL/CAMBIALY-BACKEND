@@ -2,14 +2,15 @@
 import os
 import redis
 from dotenv import load_dotenv
-
+import logging
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 class MockRedis:
     def __init__(self):
         self._data = {}
         self._history = {}  # <-- Almacenará las listas para el simulador de historial
-        print("Usando MockRedis (sin conexión a Upstash)")
+        logger.info("Usando Redis Local (sin conexión a Upstash)")
     
     def get(self, key):
         return self._data.get(key)
@@ -51,37 +52,38 @@ class MockRedis:
         # Aplicamos el rebanado (slicing) posicional de Redis
         return just_values[start:end+1]
 
-# Ver si debemos usar Upstash
+# ── Decidir qué Redis usar ──
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+REDIS_URL = os.getenv("REDIS_URL", "")
 APP_ENV = os.getenv("APP_ENV", "development")
 
-print(f"DEBUG: APP_ENV = '{APP_ENV}'")
-print(f"DEBUG: UPSTASH_URL = '{UPSTASH_URL[:40] if UPSTASH_URL else 'NO SET'}'...")
-print(f"DEBUG: UPSTASH_TOKEN = {'SET' if UPSTASH_TOKEN else 'NO SET'}")
-
-if APP_ENV == "production" and UPSTASH_URL and UPSTASH_TOKEN:
+logger.debug(f"APP_ENV = '{APP_ENV}'")
+logger.debug(f"REDIS_URL = {'SET' if REDIS_URL else 'NO SET'}")
+logger.debug(f"UPSTASH_URL = '{UPSTASH_URL[:40] if UPSTASH_URL else 'NO SET'}'...")
+logger.debug(f"UPSTASH_TOKEN = {'SET' if UPSTASH_TOKEN else 'NO SET'}")
+if REDIS_URL:
     try:
-        
-        # Parsear la URL de Upstash (formato: https://xxxx.upstash.io)
-        # Extraer el host (quitar https:// y .upstash.io)
-        host = UPSTASH_URL.replace("https://", "").replace("http://", "")
-        
-        redis_client = redis.Redis(
-            host=host,
-            port=6379,
-            password=UPSTASH_TOKEN,
-            ssl=True,
-            decode_responses=True
-        )
-        # Probar conexión
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
-        print("Conectado a Upstash Redis (vía redis-py)")
+        logger.info("Conectado a Redis local")
     except Exception as e:
-        print(f"Error Upstash: {e}, usando MockRedis")
+        logger.error(f"Error REDIS_URL: {e}, usando MockRedis")
+        redis_client = MockRedis()
+elif APP_ENV == "production" and UPSTASH_URL and UPSTASH_TOKEN:
+    try:
+        host = UPSTASH_URL.replace("https://", "").replace("http://", "")
+        redis_client = redis.Redis(
+            host=host, port=6379, password=UPSTASH_TOKEN,
+            ssl=True, decode_responses=True
+        )
+        redis_client.ping()
+        logger.info("Conectado a Upstash Redis (vía redis-py)")
+    except Exception as e:
+        logger.error(f"ERROR - Error Upstash: {e}, usando MockRedis")
         redis_client = MockRedis()
 else:
-    print("Usando MockRedis (condición no cumplida)")
+    logger.warning("Usando MockRedis (sin conexión externa)")
     redis_client = MockRedis()
 
 redis_db = redis_client
