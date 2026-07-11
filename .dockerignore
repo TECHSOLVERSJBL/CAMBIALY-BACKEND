@@ -1,0 +1,37 @@
+# Git
+.git
+.gitignore
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment and dependencies
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+
+# Environment variables and secrets
+.env
+*.env
+.env.*
+secrets.json
+
+# Development and IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation and testing
+README.md
+tests/
+htmlcov/
+.coverage
