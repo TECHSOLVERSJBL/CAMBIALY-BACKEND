@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
     # --- CÓDIGO DE CIERRE ---
     logger.info("Apagando servicios de AhorraVE...")
     app.state.scheduler.shutdown()
-
+APP_ENV = os.getenv("APP_ENV", "development")
 app = FastAPI(
     title="AhorraVE API",
     description="""
@@ -51,8 +51,10 @@ app = FastAPI(
     consultar el historial de precios y calcular la opción más conveniente 
     entre dos pagos (ej: USD vs VES).
     """,
+    docs_url=None if APP_ENV == "production" else "/docs",
+    redoc_url=None if APP_ENV == "production" else "/redoc",
+    openapi_url=None if APP_ENV == "production" else "/openapi.json",
     version="1.0.0",
-    docs_url="/docs",
     lifespan=lifespan
 )
 
