@@ -89,9 +89,20 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    safe_messages = {
+        400: "Solicitud inválida",
+        401: "No autorizado",
+        403: "Acceso prohibido",
+        404: "Recurso no encontrado",
+        405: "Método no permitido",
+        422: "Error de validación",
+        500: "Error interno del servidor",
+        503: "Servicio no disponible",
+    }
+    detail = safe_messages.get(exc.status_code, "Error del servidor")
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": "Recurso no encontrado" if exc.status_code == 404 else exc.detail}
+        content={"error": detail}
     )
 
 # ========== ENDPOINTS ==========
