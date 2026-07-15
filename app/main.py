@@ -3,7 +3,8 @@ import logging
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status,  Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
 from app.schemas import CalculationRequest
@@ -136,8 +137,26 @@ async def get_rates_history(
     parsed = [json.loads(item) for item in raw_history]
     return {"category": category, "history": parsed}
 
+security = HTTPBasic()
+
+def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = os.getenv("ADMIN_USERNAME", "admin")
+    correct_password = os.getenv("ADMIN_PASSWORD", "changeme")
+    
+    if (credentials.username == correct_username and 
+            credentials.password == correct_password):
+        return credentials
+    
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid Admin Credentials",
+        headers={"WWW-Authenticate": "Basic"},
+    )
 @app.get("/debug/scheduler", tags=["Sistema"])
-async def get_scheduler_status(request: Request):
+async def get_scheduler_status(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)
+):
     """Retorna el estado de los trabajos programados."""
     scheduler = request.app.state.scheduler
     jobs = scheduler.get_jobs()
