@@ -11,6 +11,9 @@ from app.schemas import CalculationRequest
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker
 from typing import Optional, Literal
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # Configuración del Logger
 logger = logging.getLogger("uvicorn.error")
@@ -23,6 +26,8 @@ elif APP_ENV == "production":
     ALLOWED_ORIGINS = []  # en producción sin explícitos → CORS restrictivo
 else:
     ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+limiter = Limiter(key_func=get_remote_address)
 
 logger.info(f"Modo: {APP_ENV} | CORS origins: {ALLOWED_ORIGINS}")
 @asynccontextmanager
@@ -59,7 +64,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Demasiadas solicitudes. Intenta de nuevo en un minuto."}
+    )
 # ========== Middleware CORS ==========
 app.add_middleware(
     CORSMiddleware,
@@ -182,14 +194,15 @@ async def get_scheduler_status(
 
 
 @app.post("/api/v1/calcular", tags=["Calculadora"])
-async def calculate(request: CalculationRequest):
+@limiter.limit("10/minute")
+async def calculate(request: Request, calculation: CalculationRequest):
     """
     **Calcula cuál método de pago es más conveniente.**
     
     Compara dos precios en distintas monedas/fuentes y determina el ahorro real 
     basándose en la tasa de cambio vigente.
     """
-    source = request.preferred_source.upper()
+    source = calculation.preferred_source.upper()
     rates_data = redis_client.get(f"rates:{source.lower()}")
     
     if not rates_data:
@@ -203,9 +216,9 @@ async def calculate(request: CalculationRequest):
         types = {"USD": price * usd_rate, "VES": price, "EUR": price * float(rates.get("EUR", usd_rate * 1.08))}
         return types.get(type_, price)
     
-    val_a, val_b = to_ves(request.price_a, request.type_a), to_ves(request.price_b, request.type_b)
+    val_a, val_b = to_ves(calculation.price_a, calculation.type_a), to_ves(calculation.price_b, calculation.type_b)
     best = "OPTION_A" if val_a <= val_b else "OPTION_B"
-    savings = abs(val_a - val_b) / (usd_rate if request.target_currency == "USD" else 1)
+    savings = abs(val_a - val_b) / (usd_rate if calculation.target_currency == "USD" else 1)
     
     return {
         "best_option": best,
