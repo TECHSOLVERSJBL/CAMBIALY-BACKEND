@@ -3,13 +3,17 @@ import logging
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, Request, status
+from fastapi import FastAPI, HTTPException, Query, Request, status,  Depends
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
 from app.schemas import CalculationRequest
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker
 from typing import Optional, Literal
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 # Configuración del Logger
 logger = logging.getLogger("uvicorn.error")
@@ -22,6 +26,8 @@ elif APP_ENV == "production":
     ALLOWED_ORIGINS = []  # en producción sin explícitos → CORS restrictivo
 else:
     ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
+limiter = Limiter(key_func=get_remote_address)
 
 logger.info(f"Modo: {APP_ENV} | CORS origins: {ALLOWED_ORIGINS}")
 @asynccontextmanager
@@ -42,7 +48,7 @@ async def lifespan(app: FastAPI):
     # --- CÓDIGO DE CIERRE ---
     logger.info("Apagando servicios de AhorraVE...")
     app.state.scheduler.shutdown()
-
+APP_ENV = os.getenv("APP_ENV", "development")
 app = FastAPI(
     title="AhorraVE API",
     description="""
@@ -51,12 +57,21 @@ app = FastAPI(
     consultar el historial de precios y calcular la opción más conveniente 
     entre dos pagos (ej: USD vs VES).
     """,
+    docs_url=None if APP_ENV == "production" else "/docs",
+    redoc_url=None if APP_ENV == "production" else "/redoc",
+    openapi_url=None if APP_ENV == "production" else "/openapi.json",
     version="1.0.0",
-    docs_url="/docs",
     lifespan=lifespan
 )
 
-
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"error": "Demasiadas solicitudes. Intenta de nuevo en un minuto."}
+    )
 # ========== Middleware CORS ==========
 app.add_middleware(
     CORSMiddleware,
@@ -65,6 +80,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ========== Middleware de Seguridad (OWASP Headers) ==========
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 # ========== MANEJADORES DE ERRORES ==========
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -76,9 +101,20 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    safe_messages = {
+        400: "Solicitud inválida",
+        401: "No autorizado",
+        403: "Acceso prohibido",
+        404: "Recurso no encontrado",
+        405: "Método no permitido",
+        422: "Error de validación",
+        500: "Error interno del servidor",
+        503: "Servicio no disponible",
+    }
+    detail = safe_messages.get(exc.status_code, "Error del servidor")
     return JSONResponse(
         status_code=exc.status_code,
-        content={"error": "Recurso no encontrado" if exc.status_code == 404 else exc.detail}
+        content={"error": detail}
     )
 
 # ========== ENDPOINTS ==========
@@ -124,8 +160,26 @@ async def get_rates_history(
     parsed = [json.loads(item) for item in raw_history]
     return {"category": category, "history": parsed}
 
+security = HTTPBasic()
+
+def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    correct_username = os.getenv("ADMIN_USERNAME", "admin")
+    correct_password = os.getenv("ADMIN_PASSWORD", "changeme")
+    
+    if (credentials.username == correct_username and 
+            credentials.password == correct_password):
+        return credentials
+    
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid Admin Credentials",
+        headers={"WWW-Authenticate": "Basic"},
+    )
 @app.get("/debug/scheduler", tags=["Sistema"])
-async def get_scheduler_status(request: Request):
+async def get_scheduler_status(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(verify_admin_credentials)
+):
     """Retorna el estado de los trabajos programados."""
     scheduler = request.app.state.scheduler
     jobs = scheduler.get_jobs()
@@ -140,14 +194,15 @@ async def get_scheduler_status(request: Request):
 
 
 @app.post("/api/v1/calcular", tags=["Calculadora"])
-async def calculate(request: CalculationRequest):
+@limiter.limit("10/minute")
+async def calculate(request: Request, calculation: CalculationRequest):
     """
     **Calcula cuál método de pago es más conveniente.**
     
     Compara dos precios en distintas monedas/fuentes y determina el ahorro real 
     basándose en la tasa de cambio vigente.
     """
-    source = request.preferred_source.upper()
+    source = calculation.preferred_source.upper()
     rates_data = redis_client.get(f"rates:{source.lower()}")
     
     if not rates_data:
@@ -161,9 +216,9 @@ async def calculate(request: CalculationRequest):
         types = {"USD": price * usd_rate, "VES": price, "EUR": price * float(rates.get("EUR", usd_rate * 1.08))}
         return types.get(type_, price)
     
-    val_a, val_b = to_ves(request.price_a, request.type_a), to_ves(request.price_b, request.type_b)
+    val_a, val_b = to_ves(calculation.price_a, calculation.type_a), to_ves(calculation.price_b, calculation.type_b)
     best = "OPTION_A" if val_a <= val_b else "OPTION_B"
-    savings = abs(val_a - val_b) / (usd_rate if request.target_currency == "USD" else 1)
+    savings = abs(val_a - val_b) / (usd_rate if calculation.target_currency == "USD" else 1)
     
     return {
         "best_option": best,
