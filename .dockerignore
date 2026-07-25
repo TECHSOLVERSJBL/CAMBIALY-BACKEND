@@ -32,6 +32,5 @@ secrets.json
 
 # Documentation and testing
 README.md
-tests/
 htmlcov/
 .coverage
