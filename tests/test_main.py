@@ -46,7 +46,7 @@ async def test_get_rates_history_pagination(client):
         redis_client._history[history_key].append((ts, payload))
     redis_client._history[history_key].sort(key=lambda x: x[0])
 
-    response = await client.get("/api/v1/rates/history/bcv?page=1&size=10")
+    response = await client.get("/api/v2/rates/history/bcv?page=1&size=10")
     assert response.status_code == 200
     data = response.json()
     assert data["page"] == 1
@@ -54,14 +54,14 @@ async def test_get_rates_history_pagination(client):
     assert data["total_records"] == 25
     assert len(data["history"]) == 10
 
-    response = await client.get("/api/v1/rates/history/bcv?page=3&size=10")
+    response = await client.get("/api/v2/rates/history/bcv?page=3&size=10")
     assert response.status_code == 200
     data = response.json()
     assert data["page"] == 3
     assert len(data["history"]) == 5
 
-    response = await client.get("/api/v1/rates/history/bcv?page=0&size=10")
+    response = await client.get("/api/v2/rates/history/bcv?page=0&size=10")
     assert response.status_code == 422
 
-    response = await client.get("/api/v1/rates/history/bcv?page=1&size=200")
+    response = await client.get("/api/v2/rates/history/bcv?page=1&size=200")
     assert response.status_code == 422
