@@ -52,6 +52,12 @@ class MockRedis:
         # Aplicamos el rebanado (slicing) posicional de Redis
         return just_values[start:end+1]
 
+    def zcard(self, key):
+        """Simula ZCARD: devuelve el número de elementos en un sorted set"""
+        if key not in self._history:
+            return 0
+        return len(self._history[key])
+
 # ── Decidir qué Redis usar ──
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")

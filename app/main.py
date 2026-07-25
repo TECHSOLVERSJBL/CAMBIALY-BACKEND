@@ -160,6 +160,31 @@ async def get_rates_history(
     parsed = [json.loads(item) for item in raw_history]
     return {"category": category, "history": parsed}
 
+
+@app.get("/api/v2/rates/history/{category}", tags=["Historial"])
+async def get_rates_history_v2(
+    category: Literal["bcv", "binance"],
+    page: int = Query(default=1, ge=1, description="Número de página"),
+    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)")
+):
+    """
+    Obtiene los **últimos registros históricos** de tasas con paginación.
+    Versión 2 — incluye metadatos de paginación para evitar desbordamiento.
+    """
+    history_key = f"history:rates:{category}"
+    offset = (page - 1) * size
+    total_records = redis_client.zcard(history_key)
+    raw_history = redis_client.zrevrange(history_key, offset, offset + size - 1)
+    parsed = [json.loads(item) for item in raw_history]
+    return {
+        "category": category,
+        "page": page,
+        "size": size,
+        "total_records": total_records,
+        "history": parsed
+    }
+
+
 security = HTTPBasic()
 
 def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)):
