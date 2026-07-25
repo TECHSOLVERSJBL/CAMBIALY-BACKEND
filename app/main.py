@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     # --- CÓDIGO DE INICIO ---
     logger.info("Iniciando servicios de AhorraVE...")
 
-    # 1. Tareas de carga inicial
+    # WILL REFACTOR
     await run_bcv_worker()
     await run_binance_worker()
     await run_cop_worker()

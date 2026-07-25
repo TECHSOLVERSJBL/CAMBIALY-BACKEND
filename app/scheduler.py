@@ -6,7 +6,7 @@ from app.services import ping_upstash_redis
 
 logger = logging.getLogger("uvicorn.error")
 
-
+#WILL REFACTOR INTO A GENERIC FUNCTION LATER, FOR NOW IT'S OK TO HAVE IT LIKE THIS. THIS A DRY MESS
 async def run_bcv_worker():
     try:
         worker = BCVWorker()

@@ -62,7 +62,7 @@ class BaseRateWorker(ABC):
             logger.error(f"Error in {self.__class__.__name__}: {str(e)}")
             return None
 
-
+#WILL REFACTOR...MAYBE MAKE WORKERS EASIER TO READ AND SEPARATE SOME THINGS?
 class BCVWorker(BaseRateWorker):
     def __init__(self):
         super().__init__(redis_key="rates:bcv")
@@ -113,7 +113,7 @@ class BCVWorker(BaseRateWorker):
 
             return {k: round(v, 2) for k, v in rates.items() if v is not None}
 
-
+#WILL REFACTOR
 class BinanceWorker(BaseRateWorker):
     def __init__(self):
         super().__init__(redis_key="rates:binance")
