@@ -1,7 +1,7 @@
 # app/scheduler.py
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from app.scrapers import BCVWorker, BinanceWorker
+from app.scrapers import BCVWorker, BinanceWorker, YadioRateWorker
 from app.services import ping_upstash_redis
 
 logger = logging.getLogger("uvicorn.error")
@@ -21,6 +21,22 @@ async def run_binance_worker():
         await worker.run()
     except Exception as e:
         logger.error(f"Error en BinanceWorker: {e}")
+
+
+async def run_cop_worker():
+    try:
+        worker = YadioRateWorker(fiat="COP", redis_key="rates:cop")
+        await worker.run()
+    except Exception as e:
+        logger.error(f"Error en CopWorker: {e}")
+
+
+async def run_ars_worker():
+    try:
+        worker = YadioRateWorker(fiat="ARS", redis_key="rates:ars")
+        await worker.run()
+    except Exception as e:
+        logger.error(f"Error en ArsWorker: {e}")
 
 
 def start_background_tasks():
@@ -56,6 +72,26 @@ def start_background_tasks():
         minute='0,30',
         id='job_bcv_scraper',
         replace_existing=True
+    )
+
+    # 4. Scraper COP (Cada 15 minutos)
+    scheduler.add_job(
+        run_cop_worker,
+        'interval',
+        minutes=15,
+        id='job_cop_scraper',
+        replace_existing=True,
+        misfire_grace_time=30
+    )
+
+    # 5. Scraper ARS (Cada 15 minutos)
+    scheduler.add_job(
+        run_ars_worker,
+        'interval',
+        minutes=15,
+        id='job_ars_scraper',
+        replace_existing=True,
+        misfire_grace_time=30
     )
 
     scheduler.start()

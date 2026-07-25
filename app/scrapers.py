@@ -204,3 +204,20 @@ class BinanceWorker(BaseRateWorker):
                 # Re-lanzamos la excepción para que el BaseRateWorker la registre y no guarde datos corruptos en Redis
                 raise Exception(
                     f"Ambos servicios de tasas (Binance y Yadio) fallaron de forma consecutiva. Deteniendo flujo.")
+
+
+class YadioRateWorker(BaseRateWorker):
+    """Worker genérico para tasas vía Yadio.io, parametrizable por moneda fiat."""
+
+    def __init__(self, fiat: str, redis_key: str):
+        super().__init__(redis_key=redis_key)
+        self.fiat = fiat
+
+    async def fetch_rate(self) -> dict:
+        url = f"https://api.yadio.io/exchanges/{self.fiat}"
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            rate = data.get("USDT", {}).get("price")
+            return {"USD": round(float(rate), 2)}

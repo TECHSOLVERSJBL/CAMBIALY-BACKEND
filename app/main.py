@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
 from app.schemas import CalculationRequest
 from app.database import redis_client
-from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker
+from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -38,6 +38,8 @@ async def lifespan(app: FastAPI):
     # 1. Tareas de carga inicial
     await run_bcv_worker()
     await run_binance_worker()
+    await run_cop_worker()
+    await run_ars_worker()
 
     # 2. Iniciar el scheduler y guardarlo en el estado de la app
     app.state.scheduler = start_background_tasks()
