@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, API
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
-from app.schemas import CalculationRequest
+from app.schemas import CalculationRequest, RateResponseDTO
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal
@@ -264,7 +264,7 @@ async def calculate(request: Request, calculation: CalculationRequest):
 rates_router_v2 = APIRouter(prefix="/api/v2/rates", tags=["Tasas V2"])
 
 
-@rates_router_v2.get("/usd")
+@rates_router_v2.get("/usd", response_model=RateResponseDTO)
 async def get_usd_rate():
     """
     Retorna la **tasa oficial del Dólar (USD)** según el BCV.
@@ -276,15 +276,15 @@ async def get_usd_rate():
     usd_rate = payload.get("rates", {}).get("USD")
     if usd_rate is None:
         raise HTTPException(status_code=404, detail="Tasa USD no disponible")
-    return {
-        "asset": "USD",
-        "source": payload.get("source"),
-        "last_updated": payload.get("last_updated"),
-        "rate": usd_rate
-    }
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="USD",
+        rate_value=usd_rate,
+        last_updated=payload.get("last_updated")
+    )
 
 
-@rates_router_v2.get("/eur")
+@rates_router_v2.get("/eur", response_model=RateResponseDTO)
 async def get_eur_rate():
     """
     Retorna la **tasa oficial del Euro (EUR)** según el BCV.
@@ -296,15 +296,15 @@ async def get_eur_rate():
     eur_rate = payload.get("rates", {}).get("EUR")
     if eur_rate is None:
         raise HTTPException(status_code=404, detail="Tasa EUR no disponible")
-    return {
-        "asset": "EUR",
-        "source": payload.get("source"),
-        "last_updated": payload.get("last_updated"),
-        "rate": eur_rate
-    }
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="EUR",
+        rate_value=eur_rate,
+        last_updated=payload.get("last_updated")
+    )
 
 
-@rates_router_v2.get("/usdt")
+@rates_router_v2.get("/usdt", response_model=RateResponseDTO)
 async def get_usdt_rate():
     """
     Retorna el **precio promedio USDT/VES** desde Binance P2P.
@@ -316,15 +316,15 @@ async def get_usdt_rate():
     usdt_rate = payload.get("rates", {}).get("USD")
     if usdt_rate is None:
         raise HTTPException(status_code=404, detail="Tasa USDT no disponible")
-    return {
-        "asset": "USDT",
-        "source": payload.get("source"),
-        "last_updated": payload.get("last_updated"),
-        "rate": usdt_rate
-    }
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="USDT",
+        rate_value=usdt_rate,
+        last_updated=payload.get("last_updated")
+    )
 
 
-@rates_router_v2.get("/cop")
+@rates_router_v2.get("/cop", response_model=RateResponseDTO)
 async def get_cop_rate():
     """
     Retorna la **tasa del Peso Colombiano (COP)** vía Yadio.io.
@@ -336,15 +336,15 @@ async def get_cop_rate():
     cop_rate = payload.get("rates", {}).get("USD")
     if cop_rate is None:
         raise HTTPException(status_code=404, detail="Tasa COP no disponible")
-    return {
-        "asset": "COP",
-        "source": payload.get("source"),
-        "last_updated": payload.get("last_updated"),
-        "rate": cop_rate
-    }
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="COP",
+        rate_value=cop_rate,
+        last_updated=payload.get("last_updated")
+    )
 
 
-@rates_router_v2.get("/ars")
+@rates_router_v2.get("/ars", response_model=RateResponseDTO)
 async def get_ars_rate():
     """
     Retorna la **tasa del Peso Argentino (ARS)** vía Yadio.io.
@@ -356,12 +356,12 @@ async def get_ars_rate():
     ars_rate = payload.get("rates", {}).get("USD")
     if ars_rate is None:
         raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
-    return {
-        "asset": "ARS",
-        "source": payload.get("source"),
-        "last_updated": payload.get("last_updated"),
-        "rate": ars_rate
-    }
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="ARS",
+        rate_value=ars_rate,
+        last_updated=payload.get("last_updated")
+    )
 
 
 app.include_router(rates_router_v2)

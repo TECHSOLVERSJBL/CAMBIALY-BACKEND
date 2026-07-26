@@ -15,3 +15,10 @@ class CalculationResponse(BaseModel):
     request_summary: dict
     calculation_details: dict
     recommendation: dict
+
+
+class RateResponseDTO(BaseModel):
+    source: str
+    target_currency: str
+    rate_value: float
+    last_updated: str
