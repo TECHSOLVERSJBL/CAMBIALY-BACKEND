@@ -317,6 +317,46 @@ async def get_usdt_rate():
     }
 
 
+@rates_router_v2.get("/cop")
+async def get_cop_rate():
+    """
+    Retorna la **tasa del Peso Colombiano (COP)** vía Yadio.io.
+    """
+    data = redis_client.get("rates:cop")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa COP no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    cop_rate = payload.get("rates", {}).get("USD")
+    if cop_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa COP no disponible")
+    return {
+        "asset": "COP",
+        "source": payload.get("source"),
+        "last_updated": payload.get("last_updated"),
+        "rate": cop_rate
+    }
+
+
+@rates_router_v2.get("/ars")
+async def get_ars_rate():
+    """
+    Retorna la **tasa del Peso Argentino (ARS)** vía Yadio.io.
+    """
+    data = redis_client.get("rates:ars")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    ars_rate = payload.get("rates", {}).get("USD")
+    if ars_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
+    return {
+        "asset": "ARS",
+        "source": payload.get("source"),
+        "last_updated": payload.get("last_updated"),
+        "rate": ars_rate
+    }
+
+
 app.include_router(rates_router_v2)
 
 
