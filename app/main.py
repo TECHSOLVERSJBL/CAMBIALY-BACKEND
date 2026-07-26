@@ -55,9 +55,16 @@ app = FastAPI(
     title="AhorraVE API",
     description="""
     API para la gestión de tasas cambiarias en Venezuela.
-    Esta API permite obtener tasas actualizadas del BCV y Binance, 
+    Esta API permite obtener tasas actualizadas del BCV, Binance y Yadio, 
     consultar el historial de precios y calcular la opción más conveniente 
     entre dos pagos (ej: USD vs VES).
+
+    ⚖️ **Descargo de Responsabilidad / Disclaimer**
+    Los datos proporcionados por esta API son de carácter **meramente informativo**
+    y se obtienen de fuentes públicas de terceros (BCV, Binance, Yadio.io).
+    No constituyen asesoramiento financiero, recomendación de inversión ni
+    garantía de exactitud en tiempo real. El uso de la información es bajo
+    la exclusiva responsabilidad del usuario.
     """,
     docs_url=None if APP_ENV == "production" else "/docs",
     redoc_url=None if APP_ENV == "production" else "/redoc",
@@ -365,5 +372,10 @@ async def root():
     return {
         "message": "Bienvenido a la API de AhorraVE",
         "docs": "/docs",
-        "status": "healthy"
+        "status": "healthy",
+        "disclaimer": (
+            "Los datos proporcionados son meramente informativos, "
+            "obtenidos de fuentes públicas de terceros. No constituyen "
+            "asesoramiento financiero. Uso bajo responsabilidad del usuario."
+        )
     }
