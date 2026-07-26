@@ -70,3 +70,27 @@ async def test_get_rates_history_pagination(client):
 
     response = await client.get("/api/v2/rates/history/bcv?page=1&size=200")
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_cop_rate(client):
+    from app.database import redis_client
+    redis_client.set("rates:cop", json.dumps({"source": "YadioRate", "last_updated": "2026-07-26T12:00:00Z", "rates": {"USD": 4500.50}}))
+    response = await client.get("/api/v2/rates/cop")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["target_currency"] == "COP"
+    assert data["rate_value"] == 4500.50
+    assert data["source"] == "YadioRate"
+
+
+@pytest.mark.asyncio
+async def test_get_ars_rate(client):
+    from app.database import redis_client
+    redis_client.set("rates:ars", json.dumps({"source": "YadioRate", "last_updated": "2026-07-26T12:00:00Z", "rates": {"USD": 1200.75}}))
+    response = await client.get("/api/v2/rates/ars")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["target_currency"] == "ARS"
+    assert data["rate_value"] == 1200.75
+    assert data["source"] == "YadioRate"
