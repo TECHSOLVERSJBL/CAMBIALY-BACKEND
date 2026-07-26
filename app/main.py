@@ -3,14 +3,16 @@ import logging
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, Request, status,  Depends
+from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, APIRouter
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
-from app.schemas import CalculationRequest
+from app.schemas import CalculationRequest, RateResponseDTO
 from app.database import redis_client
-from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker
+from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal
+from datetime import datetime
+from app.utils import datetime_to_unix
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -35,9 +37,11 @@ async def lifespan(app: FastAPI):
     # --- CÓDIGO DE INICIO ---
     logger.info("Iniciando servicios de AhorraVE...")
 
-    # 1. Tareas de carga inicial
+    # WILL REFACTOR
     await run_bcv_worker()
     await run_binance_worker()
+    await run_cop_worker()
+    await run_ars_worker()
 
     # 2. Iniciar el scheduler y guardarlo en el estado de la app
     app.state.scheduler = start_background_tasks()
@@ -53,9 +57,16 @@ app = FastAPI(
     title="AhorraVE API",
     description="""
     API para la gestión de tasas cambiarias en Venezuela.
-    Esta API permite obtener tasas actualizadas del BCV y Binance, 
+    Esta API permite obtener tasas actualizadas del BCV, Binance y Yadio, 
     consultar el historial de precios y calcular la opción más conveniente 
     entre dos pagos (ej: USD vs VES).
+
+    ⚖️ **Descargo de Responsabilidad / Disclaimer**
+    Los datos proporcionados por esta API son de carácter **meramente informativo**
+    y se obtienen de fuentes públicas de terceros (BCV, Binance, Yadio.io).
+    No constituyen asesoramiento financiero, recomendación de inversión ni
+    garantía de exactitud en tiempo real. El uso de la información es bajo
+    la exclusiva responsabilidad del usuario.
     """,
     docs_url=None if APP_ENV == "production" else "/docs",
     redoc_url=None if APP_ENV == "production" else "/redoc",
@@ -160,6 +171,41 @@ async def get_rates_history(
     parsed = [json.loads(item) for item in raw_history]
     return {"category": category, "history": parsed}
 
+
+@app.get("/api/v2/rates/history/{category}", tags=["Historial"])
+async def get_rates_history_v2(
+    category: Literal["bcv", "binance", "cop", "ars"],
+    page: int = Query(default=1, ge=1, description="Número de página"),
+    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
+    start_date: Optional[datetime] = Query(None, description="Filtro inicio (ISO8601, ej: 2026-06-01T00:00:00Z)"),
+    end_date: Optional[datetime] = Query(None, description="Filtro fin (ISO8601, ej: 2026-07-01T00:00:00Z)")
+):
+    """
+    Obtiene los **últimos registros históricos** de tasas con paginación y filtro opcional por rango de fechas.
+    Versión 2 — incluye metadatos de paginación para evitar desbordamiento.
+    """
+    history_key = f"history:rates:{category}"
+    offset = (page - 1) * size
+
+    if start_date or end_date:
+        min_ts = datetime_to_unix(start_date) if start_date else 0
+        max_ts = datetime_to_unix(end_date) if end_date else int(datetime.now().timestamp())
+        total_records = redis_client.zcount(history_key, min_ts, max_ts)
+        raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size)
+    else:
+        total_records = redis_client.zcard(history_key)
+        raw_history = redis_client.zrevrange(history_key, offset, offset + size - 1)
+
+    parsed = [json.loads(item) for item in raw_history]
+    return {
+        "category": category,
+        "page": page,
+        "size": size,
+        "total_records": total_records,
+        "history": parsed
+    }
+
+
 security = HTTPBasic()
 
 def verify_admin_credentials(credentials: HTTPBasicCredentials = Depends(security)):
@@ -225,10 +271,185 @@ async def calculate(request: Request, calculation: CalculationRequest):
         "savings": round(savings, 2),
         "details": {"a_ves": round(val_a, 2), "b_ves": round(val_b, 2)}
     }
+# ========== V2 — Rutas explícitas por tipo de activo ==========
+
+rates_router_v2 = APIRouter(prefix="/api/v2/rates", tags=["Tasas V2"])
+
+
+def _historical_rate(history_key: str, rate_field: str, date: datetime, currency: str):
+    """Busca la tasa más cercana <= date en el historial de Redis."""
+    ts = datetime_to_unix(date)
+    raw = redis_client.zrevrangebyscore(history_key, ts, 0, start=0, num=1)
+    if not raw:
+        raise HTTPException(status_code=404, detail=f"No hay datos para {currency} en la fecha indicada")
+    payload = json.loads(raw[0])
+    rate = payload.get("rates", {}).get(rate_field)
+    if rate is None:
+        raise HTTPException(status_code=404, detail=f"No hay datos para {currency} en la fecha indicada")
+    return {
+        "currency": currency,
+        "rate": rate,
+        "timestamp": date.strftime("%Y-%m-%dT%H:%M:%SZ")
+    }
+
+
+@rates_router_v2.get("/usd")
+async def get_usd_rate(
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+):
+    """
+    Retorna la **tasa oficial del Dólar (USD)** según el BCV.
+    Si se provee ?date=, busca el registro histórico más cercano.
+    """
+    if date:
+        return _historical_rate("history:rates:bcv", "USD", date, "USD")
+    data = redis_client.get("rates:bcv")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa USD no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    usd_rate = payload.get("rates", {}).get("USD")
+    if usd_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa USD no disponible")
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="USD",
+        rate_value=usd_rate,
+        last_updated=payload.get("last_updated")
+    )
+
+
+@rates_router_v2.get("/eur")
+async def get_eur_rate(
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+):
+    """
+    Retorna la **tasa oficial del Euro (EUR)** según el BCV.
+    Si se provee ?date=, busca el registro histórico más cercano.
+    """
+    if date:
+        return _historical_rate("history:rates:bcv", "EUR", date, "EUR")
+    data = redis_client.get("rates:bcv")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa EUR no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    eur_rate = payload.get("rates", {}).get("EUR")
+    if eur_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa EUR no disponible")
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="EUR",
+        rate_value=eur_rate,
+        last_updated=payload.get("last_updated")
+    )
+
+
+@rates_router_v2.get("/usdt")
+async def get_usdt_rate(
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+):
+    """
+    Retorna el **precio promedio USDT/VES** desde Binance P2P.
+    Si se provee ?date=, busca el registro histórico más cercano.
+    """
+    if date:
+        return _historical_rate("history:rates:binance", "USD", date, "USDT")
+    data = redis_client.get("rates:binance")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa USDT no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    usdt_rate = payload.get("rates", {}).get("USD")
+    if usdt_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa USDT no disponible")
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="USDT",
+        rate_value=usdt_rate,
+        last_updated=payload.get("last_updated")
+    )
+
+
+@rates_router_v2.get("/cop")
+async def get_cop_rate(
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+):
+    """
+    Retorna la **tasa del Peso Colombiano (COP)** vía Yadio.io.
+    Si se provee ?date=, busca el registro histórico más cercano.
+    """
+    if date:
+        return _historical_rate("history:rates:cop", "USD", date, "COP")
+    data = redis_client.get("rates:cop")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa COP no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    cop_rate = payload.get("rates", {}).get("USD")
+    if cop_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa COP no disponible")
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="COP",
+        rate_value=cop_rate,
+        last_updated=payload.get("last_updated")
+    )
+
+
+@rates_router_v2.get("/ars")
+async def get_ars_rate(
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+):
+    """
+    Retorna la **tasa del Peso Argentino (ARS)** vía Yadio.io.
+    Si se provee ?date=, busca el registro histórico más cercano.
+    """
+    if date:
+        return _historical_rate("history:rates:ars", "USD", date, "ARS")
+    data = redis_client.get("rates:ars")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    ars_rate = payload.get("rates", {}).get("USD")
+    if ars_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="ARS",
+        rate_value=ars_rate,
+        last_updated=payload.get("last_updated")
+    )
+
+
+@rates_router_v2.get("/ars", response_model=RateResponseDTO)
+async def get_ars_rate():
+    """
+    Retorna la **tasa del Peso Argentino (ARS)** vía Yadio.io.
+    """
+    data = redis_client.get("rates:ars")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    ars_rate = payload.get("rates", {}).get("USD")
+    if ars_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
+    return RateResponseDTO(
+        source=payload.get("source"),
+        target_currency="ARS",
+        rate_value=ars_rate,
+        last_updated=payload.get("last_updated")
+    )
+
+
+app.include_router(rates_router_v2)
+
+
 @app.get("/", tags=["Sistema"])
 async def root():
     return {
         "message": "Bienvenido a la API de AhorraVE",
         "docs": "/docs",
-        "status": "healthy"
+        "status": "healthy",
+        "disclaimer": (
+            "Los datos proporcionados son meramente informativos, "
+            "obtenidos de fuentes públicas de terceros. No constituyen "
+            "asesoramiento financiero. Uso bajo responsabilidad del usuario."
+        )
     }

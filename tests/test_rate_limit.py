@@ -1,5 +1,7 @@
+import json
 from fastapi.testclient import TestClient
 from app.main import app
+from app.database import redis_client
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -9,8 +11,11 @@ VALID_PAYLOAD = {
     "price_b": 920.00,
     "type_b": "VES",
     "target_currency": "USD",
-    "preferred_source": "binance"
+    "preferred_source": "BINANCE"
 }
+
+# Seed rate data for calcular endpoint
+redis_client.set("rates:binance", json.dumps({"source": "Binance", "last_updated": "2026-07-26T12:00:00Z", "rates": {"USD": 46.50}}))
 
 
 def test_rate_limit_returns_429_after_10_requests():

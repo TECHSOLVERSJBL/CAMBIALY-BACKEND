@@ -346,6 +346,17 @@ graph LR
 
 ---
 
+<!-- TOC --><a name="-descargo-de-responsabilidad-disclaimer"></a>
+## ⚖️ Descargo de Responsabilidad / Disclaimer
+
+Los datos, tasas de cambio y cualquier información proporcionada por este proyecto y su API son de carácter **exclusivamente informativo** y se obtienen de fuentes públicas de terceros (BCV, Binance, Yadio.io).
+
+**Este proyecto NO constituye asesoramiento financiero, recomendación de inversión, ni garantiza la exactitud, integridad o actualidad de los datos en tiempo real.** El uso de la información es bajo la exclusiva responsabilidad del usuario.
+
+El mantenimiento de este proyecto es independiente y no está afiliado, respaldado ni patrocinado por ninguna de las entidades mencionadas como fuentes de datos.
+
+---
+
 <!-- TOC --><a name="-faq-decisiones-técnicas-del-proyecto"></a>
 ## ❓ FAQ: Decisiones Técnicas del Proyecto
 
