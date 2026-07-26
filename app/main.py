@@ -3,7 +3,7 @@ import logging
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query, Request, status,  Depends
+from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, APIRouter
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
@@ -252,6 +252,74 @@ async def calculate(request: Request, calculation: CalculationRequest):
         "savings": round(savings, 2),
         "details": {"a_ves": round(val_a, 2), "b_ves": round(val_b, 2)}
     }
+# ========== V2 — Rutas explícitas por tipo de activo ==========
+
+rates_router_v2 = APIRouter(prefix="/api/v2/rates", tags=["Tasas V2"])
+
+
+@rates_router_v2.get("/usd")
+async def get_usd_rate():
+    """
+    Retorna la **tasa oficial del Dólar (USD)** según el BCV.
+    """
+    data = redis_client.get("rates:bcv")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa USD no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    usd_rate = payload.get("rates", {}).get("USD")
+    if usd_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa USD no disponible")
+    return {
+        "asset": "USD",
+        "source": payload.get("source"),
+        "last_updated": payload.get("last_updated"),
+        "rate": usd_rate
+    }
+
+
+@rates_router_v2.get("/eur")
+async def get_eur_rate():
+    """
+    Retorna la **tasa oficial del Euro (EUR)** según el BCV.
+    """
+    data = redis_client.get("rates:bcv")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa EUR no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    eur_rate = payload.get("rates", {}).get("EUR")
+    if eur_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa EUR no disponible")
+    return {
+        "asset": "EUR",
+        "source": payload.get("source"),
+        "last_updated": payload.get("last_updated"),
+        "rate": eur_rate
+    }
+
+
+@rates_router_v2.get("/usdt")
+async def get_usdt_rate():
+    """
+    Retorna el **precio promedio USDT/VES** desde Binance P2P.
+    """
+    data = redis_client.get("rates:binance")
+    if not data:
+        raise HTTPException(status_code=404, detail="Tasa USDT no disponible")
+    payload = json.loads(data) if isinstance(data, str) else data
+    usdt_rate = payload.get("rates", {}).get("USD")
+    if usdt_rate is None:
+        raise HTTPException(status_code=404, detail="Tasa USDT no disponible")
+    return {
+        "asset": "USDT",
+        "source": payload.get("source"),
+        "last_updated": payload.get("last_updated"),
+        "rate": usdt_rate
+    }
+
+
+app.include_router(rates_router_v2)
+
+
 @app.get("/", tags=["Sistema"])
 async def root():
     return {
