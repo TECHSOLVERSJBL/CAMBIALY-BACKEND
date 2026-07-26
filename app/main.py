@@ -11,6 +11,8 @@ from app.schemas import CalculationRequest, RateResponseDTO
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal
+from datetime import datetime
+from app.utils import datetime_to_unix
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -172,18 +174,28 @@ async def get_rates_history(
 
 @app.get("/api/v2/rates/history/{category}", tags=["Historial"])
 async def get_rates_history_v2(
-    category: Literal["bcv", "binance"],
+    category: Literal["bcv", "binance", "cop", "ars"],
     page: int = Query(default=1, ge=1, description="Número de página"),
-    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)")
+    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
+    start_date: Optional[datetime] = Query(None, description="Filtro inicio (ISO8601, ej: 2026-06-01T00:00:00Z)"),
+    end_date: Optional[datetime] = Query(None, description="Filtro fin (ISO8601, ej: 2026-07-01T00:00:00Z)")
 ):
     """
-    Obtiene los **últimos registros históricos** de tasas con paginación.
+    Obtiene los **últimos registros históricos** de tasas con paginación y filtro opcional por rango de fechas.
     Versión 2 — incluye metadatos de paginación para evitar desbordamiento.
     """
     history_key = f"history:rates:{category}"
     offset = (page - 1) * size
-    total_records = redis_client.zcard(history_key)
-    raw_history = redis_client.zrevrange(history_key, offset, offset + size - 1)
+
+    if start_date or end_date:
+        min_ts = datetime_to_unix(start_date) if start_date else 0
+        max_ts = datetime_to_unix(end_date) if end_date else int(datetime.now().timestamp())
+        total_records = redis_client.zcount(history_key, min_ts, max_ts)
+        raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size)
+    else:
+        total_records = redis_client.zcard(history_key)
+        raw_history = redis_client.zrevrange(history_key, offset, offset + size - 1)
+
     parsed = [json.loads(item) for item in raw_history]
     return {
         "category": category,

@@ -58,6 +58,22 @@ class MockRedis:
             return 0
         return len(self._history[key])
 
+    def zcount(self, key, min_score, max_score):
+        """Simula ZCOUNT: cuenta elementos con score en [min, max]"""
+        if key not in self._history:
+            return 0
+        return sum(1 for score, _ in self._history[key] if min_score <= score <= max_score)
+
+    def zrevrangebyscore(self, key, max_score, min_score, start=None, num=None):
+        """Simula ZREVRANGEBYSCORE: elementos en orden descendente filtrados por score"""
+        if key not in self._history:
+            return []
+        filtered = [v for s, v in self._history[key] if min_score <= s <= max_score]
+        filtered.reverse()
+        if start is not None and num is not None:
+            return filtered[start:start + num]
+        return filtered
+
 # ── Decidir qué Redis usar ──
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
