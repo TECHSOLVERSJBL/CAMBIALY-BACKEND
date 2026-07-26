@@ -1,4 +1,5 @@
 import pytest
+import json
 
 
 @pytest.mark.asyncio
@@ -15,6 +16,8 @@ async def test_health(client):
 
 @pytest.mark.asyncio
 async def test_get_bcv_rates(client):
+    from app.database import redis_client
+    redis_client.set("rates:bcv", json.dumps({"source": "BCV", "last_updated": "2026-07-26T12:00:00Z", "rates": {"USD": 45.20, "EUR": 50.10}}))
     response = await client.get("/api/v1/rates/bcv")
     assert response.status_code == 200
     assert isinstance(response.json(), dict)
@@ -22,6 +25,8 @@ async def test_get_bcv_rates(client):
 
 @pytest.mark.asyncio
 async def test_get_binance_rates(client):
+    from app.database import redis_client
+    redis_client.set("rates:binance", json.dumps({"source": "Binance", "last_updated": "2026-07-26T12:00:00Z", "rates": {"USD": 46.50}}))
     response = await client.get("/api/v1/rates/binance")
     assert response.status_code == 200
     assert isinstance(response.json(), dict)
