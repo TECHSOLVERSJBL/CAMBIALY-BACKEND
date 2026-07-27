@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field,field_validator 
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 from datetime import datetime
 
 currencies = Literal["USD", "VES", "EUR", "COP", "ARS"]
@@ -22,3 +22,9 @@ class RateResponseDTO(BaseModel):
     target_currency: str
     rate_value: float
     last_updated: str
+
+
+class RateHistoricalDTO(BaseModel):
+    currency: str
+    rate: float
+    timestamp: str

@@ -7,10 +7,10 @@ from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, API
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
-from app.schemas import CalculationRequest, RateResponseDTO
+from app.schemas import CalculationRequest, RateResponseDTO, RateHistoricalDTO
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
-from typing import Optional, Literal
+from typing import Optional, Literal, Union
 from datetime import datetime
 from app.utils import datetime_to_unix
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler.shutdown()
 APP_ENV = os.getenv("APP_ENV", "development")
 app = FastAPI(
-    title="AhorraVE API",
+    title="Cambialy API",
     description="""
     API para la gestión de tasas cambiarias en Venezuela.
     Esta API permite obtener tasas actualizadas del BCV, Binance y Yadio, 
@@ -276,7 +276,7 @@ async def calculate(request: Request, calculation: CalculationRequest):
 rates_router_v2 = APIRouter(prefix="/api/v2/rates", tags=["Tasas V2"])
 
 
-def _historical_rate(history_key: str, rate_field: str, date: datetime, currency: str):
+def _historical_rate(history_key: str, rate_field: str, date: datetime, currency: str) -> RateHistoricalDTO:
     """Busca la tasa más cercana <= date en el historial de Redis."""
     ts = datetime_to_unix(date)
     raw = redis_client.zrevrangebyscore(history_key, ts, 0, start=0, num=1)
@@ -286,20 +286,21 @@ def _historical_rate(history_key: str, rate_field: str, date: datetime, currency
     rate = payload.get("rates", {}).get(rate_field)
     if rate is None:
         raise HTTPException(status_code=404, detail=f"No hay datos para {currency} en la fecha indicada")
-    return {
-        "currency": currency,
-        "rate": rate,
-        "timestamp": date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    }
+    return RateHistoricalDTO(
+        currency=currency,
+        rate=rate,
+        timestamp=date.strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
 
 
-@rates_router_v2.get("/usd")
+@rates_router_v2.get("/usd", response_model=Union[RateResponseDTO, RateHistoricalDTO])
 async def get_usd_rate(
-    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica. Ej: 2026-06-15T14:30:00Z. Cuando se provee, retorna {currency, rate, timestamp} en lugar de RateResponseDTO.")
 ):
     """
     Retorna la **tasa oficial del Dólar (USD)** según el BCV.
-    Si se provee ?date=, busca el registro histórico más cercano.
+    - Sin `?date=`: devuelve `RateResponseDTO` con la tasa más reciente.
+    - Con `?date=`: busca en el historial la tasa más cercana a la fecha indicada y retorna `{currency, rate, timestamp}`.
     """
     if date:
         return _historical_rate("history:rates:bcv", "USD", date, "USD")
@@ -318,13 +319,14 @@ async def get_usd_rate(
     )
 
 
-@rates_router_v2.get("/eur")
+@rates_router_v2.get("/eur", response_model=Union[RateResponseDTO, RateHistoricalDTO])
 async def get_eur_rate(
-    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica. Ej: 2026-06-15T14:30:00Z. Cuando se provee, retorna {currency, rate, timestamp} en lugar de RateResponseDTO.")
 ):
     """
     Retorna la **tasa oficial del Euro (EUR)** según el BCV.
-    Si se provee ?date=, busca el registro histórico más cercano.
+    - Sin `?date=`: devuelve `RateResponseDTO` con la tasa más reciente.
+    - Con `?date=`: busca en el historial la tasa más cercana a la fecha indicada y retorna `{currency, rate, timestamp}`.
     """
     if date:
         return _historical_rate("history:rates:bcv", "EUR", date, "EUR")
@@ -343,13 +345,14 @@ async def get_eur_rate(
     )
 
 
-@rates_router_v2.get("/usdt")
+@rates_router_v2.get("/usdt", response_model=Union[RateResponseDTO, RateHistoricalDTO])
 async def get_usdt_rate(
-    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica. Ej: 2026-06-15T14:30:00Z. Cuando se provee, retorna {currency, rate, timestamp} en lugar de RateResponseDTO.")
 ):
     """
     Retorna el **precio promedio USDT/VES** desde Binance P2P.
-    Si se provee ?date=, busca el registro histórico más cercano.
+    - Sin `?date=`: devuelve `RateResponseDTO` con la tasa más reciente.
+    - Con `?date=`: busca en el historial la tasa más cercana a la fecha indicada y retorna `{currency, rate, timestamp}`.
     """
     if date:
         return _historical_rate("history:rates:binance", "USD", date, "USDT")
@@ -368,13 +371,14 @@ async def get_usdt_rate(
     )
 
 
-@rates_router_v2.get("/cop")
+@rates_router_v2.get("/cop", response_model=Union[RateResponseDTO, RateHistoricalDTO])
 async def get_cop_rate(
-    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica. Ej: 2026-06-15T14:30:00Z. Cuando se provee, retorna {currency, rate, timestamp} en lugar de RateResponseDTO.")
 ):
     """
     Retorna la **tasa del Peso Colombiano (COP)** vía Yadio.io.
-    Si se provee ?date=, busca el registro histórico más cercano.
+    - Sin `?date=`: devuelve `RateResponseDTO` con la tasa más reciente.
+    - Con `?date=`: busca en el historial la tasa más cercana a la fecha indicada y retorna `{currency, rate, timestamp}`.
     """
     if date:
         return _historical_rate("history:rates:cop", "USD", date, "COP")
@@ -393,36 +397,17 @@ async def get_cop_rate(
     )
 
 
-@rates_router_v2.get("/ars")
+@rates_router_v2.get("/ars", response_model=Union[RateResponseDTO, RateHistoricalDTO])
 async def get_ars_rate(
-    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica")
+    date: Optional[datetime] = Query(None, description="Fecha/hora ISO8601 para consulta histórica. Ej: 2026-06-15T14:30:00Z. Cuando se provee, retorna {currency, rate, timestamp} en lugar de RateResponseDTO.")
 ):
     """
     Retorna la **tasa del Peso Argentino (ARS)** vía Yadio.io.
-    Si se provee ?date=, busca el registro histórico más cercano.
+    - Sin `?date=`: devuelve `RateResponseDTO` con la tasa más reciente.
+    - Con `?date=`: busca en el historial la tasa más cercana a la fecha indicada y retorna `{currency, rate, timestamp}`.
     """
     if date:
         return _historical_rate("history:rates:ars", "USD", date, "ARS")
-    data = redis_client.get("rates:ars")
-    if not data:
-        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
-    payload = json.loads(data) if isinstance(data, str) else data
-    ars_rate = payload.get("rates", {}).get("USD")
-    if ars_rate is None:
-        raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
-    return RateResponseDTO(
-        source=payload.get("source"),
-        target_currency="ARS",
-        rate_value=ars_rate,
-        last_updated=payload.get("last_updated")
-    )
-
-
-@rates_router_v2.get("/ars", response_model=RateResponseDTO)
-async def get_ars_rate():
-    """
-    Retorna la **tasa del Peso Argentino (ARS)** vía Yadio.io.
-    """
     data = redis_client.get("rates:ars")
     if not data:
         raise HTTPException(status_code=404, detail="Tasa ARS no disponible")
@@ -444,12 +429,16 @@ app.include_router(rates_router_v2)
 @app.get("/", tags=["Sistema"])
 async def root():
     return {
-        "message": "Bienvenido a la API de AhorraVE",
+        "message": "Bienvenido a la API de Cambialy. Consulta /docs para ver la documentación completa.",
         "docs": "/docs",
         "status": "healthy",
-        "disclaimer": (
-            "Los datos proporcionados son meramente informativos, "
-            "obtenidos de fuentes públicas de terceros. No constituyen "
-            "asesoramiento financiero. Uso bajo responsabilidad del usuario."
+        "disclaimer": ("""
+               ⚖️ **Descargo de Responsabilidad / Disclaimer**
+               Los datos proporcionados por esta API son de carácter **meramente informativo**
+               y se obtienen de fuentes públicas de terceros (BCV, Binance, Yadio.io).
+               No constituyen asesoramiento financiero, recomendación de inversión ni
+               garantía de exactitud en tiempo real. El uso de la información es bajo
+               la exclusiva responsabilidad del usuario.
+               """,
         )
     }
