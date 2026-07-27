@@ -54,7 +54,7 @@ async def lifespan(app: FastAPI):
     app.state.scheduler.shutdown()
 APP_ENV = os.getenv("APP_ENV", "development")
 app = FastAPI(
-    title="AhorraVE API",
+    title="Cambialy API",
     description="""
     API para la gestión de tasas cambiarias en Venezuela.
     Esta API permite obtener tasas actualizadas del BCV, Binance y Yadio, 
