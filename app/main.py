@@ -429,12 +429,16 @@ app.include_router(rates_router_v2)
 @app.get("/", tags=["Sistema"])
 async def root():
     return {
-        "message": "Bienvenido a la API de AhorraVE",
+        "message": "Bienvenido a la API de Cambialy. Consulta /docs para ver la documentación completa.",
         "docs": "/docs",
         "status": "healthy",
-        "disclaimer": (
-            "Los datos proporcionados son meramente informativos, "
-            "obtenidos de fuentes públicas de terceros. No constituyen "
-            "asesoramiento financiero. Uso bajo responsabilidad del usuario."
+        "disclaimer": ("""
+               ⚖️ **Descargo de Responsabilidad / Disclaimer**
+               Los datos proporcionados por esta API son de carácter **meramente informativo**
+               y se obtienen de fuentes públicas de terceros (BCV, Binance, Yadio.io).
+               No constituyen asesoramiento financiero, recomendación de inversión ni
+               garantía de exactitud en tiempo real. El uso de la información es bajo
+               la exclusiva responsabilidad del usuario.
+               """,
         )
     }
