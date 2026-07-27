@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from app.schemas import CalculationRequest
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker
@@ -43,6 +44,16 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     lifespan=lifespan
+)
+
+# Configuración de CORS Permisiva para Staging
+# Esto permite que cualquier aplicación (Vercel, Localhost, Mobile) se conecte sin bloqueos.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ========== MANEJADORES DE ERRORES ==========
