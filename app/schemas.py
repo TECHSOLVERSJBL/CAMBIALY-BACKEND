@@ -28,3 +28,7 @@ class RateHistoricalDTO(BaseModel):
     currency: str
     rate: float
     timestamp: str
+    rate_value: Optional[float] = None
+    last_updated: Optional[str] = None
+    target_currency: Optional[str] = None
+    source: Optional[str] = None

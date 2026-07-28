@@ -322,19 +322,33 @@ rates_router_v2 = APIRouter(prefix="/api/v2/rates", tags=["Tasas V2"])
 
 
 def _historical_rate(history_key: str, rate_field: str, date: datetime, currency: str) -> RateHistoricalDTO:
-    """Busca la tasa más cercana <= date en el historial de Redis."""
+    """Busca la tasa más cercana en el historial de Redis para la fecha indicada."""
     ts = datetime_to_unix(date)
     raw = redis_client.zrevrangebyscore(history_key, ts, 0, start=0, num=1)
     if not raw:
+        raw = redis_client.zrangebyscore(history_key, ts, "+inf", start=0, num=1)
+    if not raw:
+        raw = redis_client.zrevrange(history_key, 0, 0)
+    if not raw:
         raise HTTPException(status_code=404, detail=f"No hay datos para {currency} en la fecha indicada")
+
     payload = json.loads(raw[0])
-    rate = payload.get("rates", {}).get(rate_field)
+    rates = payload.get("rates", {})
+    rate = rates.get(rate_field)
+    if rate is None:
+        rate = rates.get("USDT") or rates.get("USD") or (list(rates.values())[0] if rates else None)
     if rate is None:
         raise HTTPException(status_code=404, detail=f"No hay datos para {currency} en la fecha indicada")
+
+    ts_str = payload.get("last_updated") or date.strftime("%Y-%m-%dT%H:%M:%SZ")
     return RateHistoricalDTO(
         currency=currency,
-        rate=rate,
-        timestamp=date.strftime("%Y-%m-%dT%H:%M:%SZ")
+        rate=float(rate),
+        timestamp=ts_str,
+        rate_value=float(rate),
+        last_updated=ts_str,
+        target_currency=currency,
+        source=payload.get("source", "Historical")
     )
 
 
