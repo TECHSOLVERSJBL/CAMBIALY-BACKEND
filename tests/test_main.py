@@ -44,12 +44,10 @@ async def test_get_rates_history_pagination(client):
     import json
 
     history_key = "history:rates:bcv"
-    redis_client._history[history_key] = []
     for i in range(25):
         ts = 1000 + i
         payload = json.dumps({"rate": i, "ts": ts})
-        redis_client._history[history_key].append((ts, payload))
-    redis_client._history[history_key].sort(key=lambda x: x[0])
+        redis_client.zadd(history_key, {payload: ts})
 
     response = await client.get("/api/v2/rates/history/bcv?page=1&size=10")
     assert response.status_code == 200

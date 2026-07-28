@@ -211,13 +211,15 @@ class YadioRateWorker(BaseRateWorker):
 
     def __init__(self, fiat: str, redis_key: str):
         super().__init__(redis_key=redis_key)
-        self.fiat = fiat
+        self.fiat = fiat.upper()
 
     async def fetch_rate(self) -> dict:
-        url = f"https://api.yadio.io/exchanges/{self.fiat}"
+        url = f"https://api.yadio.io/rate/USDT/{self.fiat}"
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
-            rate = data.get("USDT", {}).get("price")
+            rate = data.get("rate")
+            if rate is None:
+                raise Exception(f"Yadio no devolvió rate para {self.fiat}")
             return {"USD": round(float(rate), 2)}

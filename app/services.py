@@ -10,11 +10,11 @@ async def fetch_yadio_rate(fiat: str = "VES"):
     """uses USDT/{fiat} rate from Yadio.io as backup."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"https://api.yadio.io/exchanges/{fiat}")
+            response = await client.get(f"https://api.yadio.io/rate/USDT/{fiat.upper()}")
             response.raise_for_status()
             data = response.json()
-            rate = data.get("USDT", {}).get("price")
-            return float(rate)
+            rate = data.get("rate")
+            return float(rate) if rate else 0.00
 
     except Exception as e:
         logger.error(f"Error fatal obteniendo tasa de Yadio ({fiat}): {e}")

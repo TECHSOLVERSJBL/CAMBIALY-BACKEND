@@ -69,8 +69,8 @@ app = FastAPI(
     la exclusiva responsabilidad del usuario.
     """,
     docs_url="/docs",
-    redoc_url=None if APP_ENV == "production" else "/redoc",
-    openapi_url=None if APP_ENV == "production" else "/openapi.json",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
     version="1.0.0",
     lifespan=lifespan
 )
