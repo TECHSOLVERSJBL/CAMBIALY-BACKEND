@@ -177,31 +177,67 @@ async def get_rates_history_v2(
     category: Literal["bcv", "binance", "cop", "ars"],
     page: int = Query(default=1, ge=1, description="Número de página"),
     size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
+    cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
     start_date: Optional[datetime] = Query(None, description="Filtro inicio (ISO8601, ej: 2026-06-01T00:00:00Z)"),
     end_date: Optional[datetime] = Query(None, description="Filtro fin (ISO8601, ej: 2026-07-01T00:00:00Z)")
 ):
     """
-    Obtiene los **últimos registros históricos** de tasas con paginación y filtro opcional por rango de fechas.
-    Versión 2 — incluye metadatos de paginación para evitar desbordamiento.
+    Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
+    Versión 2 — incluye metadatos de paginación y cursor para scrolling infinito.
     """
     history_key = f"history:rates:{category}"
-    offset = (page - 1) * size
+    total_records = redis_client.zcard(history_key)
 
+    if cursor:
+        try:
+            if cursor.endswith("Z") or "T" in cursor:
+                max_ts = datetime_to_unix(datetime.fromisoformat(cursor.replace("Z", "+00:00")))
+            else:
+                max_ts = float(cursor)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Formato de cursor inválido")
+
+        raw_history = redis_client.zrevrangebyscore(history_key, max_ts - 0.000001, 0, start=0, num=size + 1)
+        has_more = len(raw_history) > size
+        if has_more:
+            raw_history = raw_history[:size]
+
+        parsed = [json.loads(item) for item in raw_history]
+        next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
+
+        return {
+            "category": category,
+            "page": page,
+            "size": size,
+            "total_records": total_records,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "history": parsed
+        }
+
+    offset = (page - 1) * size
     if start_date or end_date:
         min_ts = datetime_to_unix(start_date) if start_date else 0
         max_ts = datetime_to_unix(end_date) if end_date else int(datetime.now().timestamp())
         total_records = redis_client.zcount(history_key, min_ts, max_ts)
-        raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size)
+        raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size + 1)
     else:
-        total_records = redis_client.zcard(history_key)
-        raw_history = redis_client.zrevrange(history_key, offset, offset + size - 1)
+        raw_history = redis_client.zrevrange(history_key, offset, offset + size)
+
+    has_more = len(raw_history) > size
+    if has_more:
+        raw_history = raw_history[:size]
 
     parsed = [json.loads(item) for item in raw_history]
+    next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
+
     return {
         "category": category,
         "page": page,
         "size": size,
         "total_records": total_records,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
         "history": parsed
     }
 
