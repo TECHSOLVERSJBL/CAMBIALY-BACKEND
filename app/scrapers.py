@@ -207,19 +207,35 @@ class BinanceWorker(BaseRateWorker):
 
 
 class YadioRateWorker(BaseRateWorker):
-    """Worker genérico para tasas vía Yadio.io, parametrizable por moneda fiat."""
+    """Worker genérico para tasas vía Yadio.io, parametrizable por moneda fiat.
+    Retorna cuántos VES (bolívares) equivalen a 1 unidad de la moneda fiat.
+    Ejemplo: COP → cuántos VES por 1 COP.
+    """
 
     def __init__(self, fiat: str, redis_key: str):
         super().__init__(redis_key=redis_key)
         self.fiat = fiat.upper()
 
     async def fetch_rate(self) -> dict:
-        url = f"https://api.yadio.io/rate/USDT/{self.fiat}"
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            data = response.json()
-            rate = data.get("rate")
-            if rate is None:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # 1. Tasa fiat → USDT (cuantos {fiat} por 1 USDT)
+            fiat_resp = await client.get(f"https://api.yadio.io/rate/USDT/{self.fiat}")
+            fiat_resp.raise_for_status()
+            fiat_data = fiat_resp.json()
+            fiat_rate = fiat_data.get("rate")
+            if fiat_rate is None:
                 raise Exception(f"Yadio no devolvió rate para {self.fiat}")
-            return {"USD": round(float(rate), 2)}
+
+            # 2. Tasa VES → USDT (cuantos VES por 1 USDT)
+            ves_resp = await client.get("https://api.yadio.io/rate/USDT/VES")
+            ves_resp.raise_for_status()
+            ves_data = ves_resp.json()
+            ves_rate = ves_data.get("rate")
+            if ves_rate is None:
+                raise Exception("Yadio no devolvió rate para VES")
+
+            # 3. VES por 1 unidad de fiat
+            #    1 COP = (VES_per_USDT / COP_per_USDT) VES
+            rate_value = ves_rate / fiat_rate
+
+            return {"USD": round(rate_value, 2)}
