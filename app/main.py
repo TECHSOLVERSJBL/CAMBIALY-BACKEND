@@ -68,7 +68,7 @@ app = FastAPI(
     garantía de exactitud en tiempo real. El uso de la información es bajo
     la exclusiva responsabilidad del usuario.
     """,
-    docs_url=None if APP_ENV == "production" else "/docs",
+    docs_url="/docs",
     redoc_url=None if APP_ENV == "production" else "/redoc",
     openapi_url=None if APP_ENV == "production" else "/openapi.json",
     version="1.0.0",
