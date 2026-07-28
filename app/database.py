@@ -68,11 +68,34 @@ class MockRedis:
         """Simula ZREVRANGEBYSCORE: elementos en orden descendente filtrados por score"""
         if key not in self._history:
             return []
-        filtered = [v for s, v in self._history[key] if min_score <= s <= max_score]
-        filtered.reverse()
+        
+        exclusive_max = False
+        if isinstance(max_score, str) and max_score.startswith("("):
+            exclusive_max = True
+            max_val = float(max_score[1:])
+        else:
+            max_val = float(max_score)
+
+        exclusive_min = False
+        if isinstance(min_score, str) and min_score.startswith("("):
+            exclusive_min = True
+            min_val = float(min_score[1:])
+        else:
+            min_val = float(min_score)
+
+        filtered = []
+        for s, v in self._history[key]:
+            match_max = (s < max_val) if exclusive_max else (s <= max_val)
+            match_min = (s > min_val) if exclusive_min else (s >= min_val)
+            if match_max and match_min:
+                filtered.append((s, v))
+
+        filtered.sort(key=lambda x: x[0], reverse=True)
+        just_values = [v for s, v in filtered]
+
         if start is not None and num is not None:
-            return filtered[start:start + num]
-        return filtered
+            return just_values[start:start + num]
+        return just_values
 
 # ── Decidir qué Redis usar ──
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")

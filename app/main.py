@@ -185,6 +185,7 @@ async def get_rates_history_v2(
     Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
     Versión 2 — incluye metadatos de paginación y cursor para scrolling infinito.
     """
+    logger.info(f"[API V2 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
     history_key = f"history:rates:{category}"
     total_records = redis_client.zcard(history_key)
 
@@ -194,16 +195,23 @@ async def get_rates_history_v2(
                 max_ts = datetime_to_unix(datetime.fromisoformat(cursor.replace("Z", "+00:00")))
             else:
                 max_ts = float(cursor)
-        except Exception:
+        except Exception as err:
+            logger.error(f"[API V2 History] Error parsing cursor '{cursor}': {err}")
             raise HTTPException(status_code=400, detail="Formato de cursor inválido")
 
-        raw_history = redis_client.zrevrangebyscore(history_key, max_ts - 0.000001, 0, start=0, num=size + 1)
+        # Exclusive score max limit using '(' or strict float subtraction
+        raw_history = redis_client.zrevrangebyscore(history_key, f"({max_ts}", 0, start=0, num=size + 1)
+        if not raw_history:
+            # Fallback for floating subtraction if '(' syntax unsupported by mock
+            raw_history = redis_client.zrevrangebyscore(history_key, max_ts - 0.000001, 0, start=0, num=size + 1)
+
         has_more = len(raw_history) > size
         if has_more:
             raw_history = raw_history[:size]
 
         parsed = [json.loads(item) for item in raw_history]
         next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
+        logger.info(f"[API V2 History] Cursor query returned {len(parsed)} items. next_cursor={next_cursor}, has_more={has_more}")
 
         return {
             "category": category,
@@ -230,6 +238,7 @@ async def get_rates_history_v2(
 
     parsed = [json.loads(item) for item in raw_history]
     next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
+    logger.info(f"[API V2 History] Page query returned {len(parsed)} items. total_records={total_records}, next_cursor={next_cursor}, has_more={has_more}")
 
     return {
         "category": category,

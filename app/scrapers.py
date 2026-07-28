@@ -50,7 +50,7 @@ class BaseRateWorker(ABC):
                 self.redis.set(self.redis_key, payload_json)
 
                 # 2. Guardar en el Historial Ordenado
-                timestamp = int(current_time.timestamp())
+                timestamp = current_time.timestamp()
                 history_key = f"history:{self.redis_key}"
 
                 self.redis.zadd(history_key, {payload_json: timestamp})
