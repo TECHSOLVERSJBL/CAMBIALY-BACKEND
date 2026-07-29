@@ -242,8 +242,8 @@ class YadioRateWorker(BaseRateWorker):
 
 
 class FrankfurterWorker(BaseRateWorker):
-    """Tasas COP/ARS → VES usando Frankfurter (BCE) + BCV.
-    Retorna cuántos VES equivalen a 1 unidad de la moneda fiat.
+    """Tasas COP/ARS → VES usando Frankfurter V2.
+    Consulta directa a /v2/rate/{fiat}/VES.
     """
 
     def __init__(self, fiat: str, redis_key: str):
@@ -251,25 +251,12 @@ class FrankfurterWorker(BaseRateWorker):
         self.fiat = fiat.upper()
 
     async def fetch_rate(self) -> dict:
-        # 1. Tasa fiat/USD desde Frankfurter (permitir redirecciones)
+        url = f"https://api.frankfurter.dev/v2/rate/{self.fiat}/VES"
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(
-                f"https://api.frankfurter.app/latest?from=USD&to={self.fiat}"
-            )
+            resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-            fiat_rate = data.get("rates", {}).get(self.fiat)
-            if not fiat_rate:
-                raise Exception(f"Frankfurter no devolvió {self.fiat}")
-
-        # 2. Tasa VES/USD desde BCV (Redis)
-        bcv_raw = self.redis.get("rates:bcv")
-        if not bcv_raw:
-            raise Exception("Tasa BCV no disponible para conversión")
-        bcv = json.loads(bcv_raw) if isinstance(bcv_raw, str) else bcv_raw
-        ves_rate = bcv.get("rates", {}).get("USD")
-        if not ves_rate:
-            raise Exception("Tasa VES no encontrada en BCV")
-
-        # 3. VES por 1 unidad de fiat
-        return {"USD": round(float(ves_rate) / float(fiat_rate), 6)}
+            rate = data.get("rate")
+            if rate is None:
+                raise Exception(f"Frankfurter no devolvió rate para {self.fiat}/VES")
+            return {"USD": round(float(rate), 6)}
