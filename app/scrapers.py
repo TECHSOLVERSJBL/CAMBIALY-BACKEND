@@ -263,7 +263,7 @@ class FrankfurterWorker(BaseRateWorker):
                 raise Exception(f"Frankfurter no devolvió {self.fiat}")
 
         # 2. Tasa VES/USD desde BCV (Redis)
-        bcv_raw = redis_client.get("rates:bcv")
+        bcv_raw = self.redis.get("rates:bcv")
         if not bcv_raw:
             raise Exception("Tasa BCV no disponible para conversión")
         bcv = json.loads(bcv_raw) if isinstance(bcv_raw, str) else bcv_raw
