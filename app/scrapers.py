@@ -251,8 +251,8 @@ class FrankfurterWorker(BaseRateWorker):
         self.fiat = fiat.upper()
 
     async def fetch_rate(self) -> dict:
-        # 1. Tasa fiat/USD desde Frankfurter
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # 1. Tasa fiat/USD desde Frankfurter (permitir redirecciones)
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             resp = await client.get(
                 f"https://api.frankfurter.app/latest?from=USD&to={self.fiat}"
             )
