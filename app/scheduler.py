@@ -1,7 +1,7 @@
 # app/scheduler.py
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from app.scrapers import BCVWorker, BinanceWorker, YadioRateWorker
+from app.scrapers import BCVWorker, BinanceWorker, FrankfurterWorker
 from app.services import ping_upstash_redis
 
 logger = logging.getLogger("uvicorn.error")
@@ -25,7 +25,7 @@ async def run_binance_worker():
 
 async def run_cop_worker():
     try:
-        worker = YadioRateWorker(fiat="COP", redis_key="rates:cop")
+        worker = FrankfurterWorker(fiat="COP", redis_key="rates:cop")
         await worker.run()
     except Exception as e:
         logger.error(f"Error en CopWorker: {e}")
@@ -33,7 +33,7 @@ async def run_cop_worker():
 
 async def run_ars_worker():
     try:
-        worker = YadioRateWorker(fiat="ARS", redis_key="rates:ars")
+        worker = FrankfurterWorker(fiat="ARS", redis_key="rates:ars")
         await worker.run()
     except Exception as e:
         logger.error(f"Error en ArsWorker: {e}")
