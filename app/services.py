@@ -1,26 +1,24 @@
 # app/services.py
 import logging
+import httpx
 from app.database import redis_client
-
 # Usamos el logger de uvicorn para ver los mensajes en la consola de Docker
 logger = logging.getLogger("uvicorn.error")
-import httpx
-import logging
 
-async def fetch_yadio_rate():
-    """uses USDT/VES rate from Yadio.io as backup."""
+
+async def fetch_yadio_rate(fiat: str = "VES"):
+    """uses USDT/{fiat} rate from Yadio.io as backup."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get("https://api.yadio.io/exchanges/VES")
+            response = await client.get(f"https://api.yadio.io/rate/USDT/{fiat.upper()}")
             response.raise_for_status()
             data = response.json()
-            # Yadio devuelve un objeto con varios exchanges, buscamos 'Binance'
-            rate = data.get("USDT", {}).get("price")
-            return float(rate)
+            rate = data.get("rate")
+            return float(rate) if rate else 0.00
 
     except Exception as e:
-        logger.error(f"Error fatal obteniendo tasa de Yadio: {e}")
-        return 0.00 # Valor de emergencia "seguro"
+        logger.error(f"Error fatal obteniendo tasa de Yadio ({fiat}): {e}")
+        return 0.00
 
 def ping_upstash_redis():
     """
