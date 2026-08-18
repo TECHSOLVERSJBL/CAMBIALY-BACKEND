@@ -11,7 +11,7 @@ from app.schemas import CalculationRequest, RateResponseDTO, RateHistoricalDTO
 from app.database import redis_client
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal, Union
-from datetime import datetime
+from datetime import date, datetime
 from app.utils import datetime_to_unix
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -178,12 +178,16 @@ async def get_rates_history_v2(
     page: int = Query(default=1, ge=1, description="Número de página"),
     size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
     cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
-    start_date: Optional[datetime] = Query(None, description="Filtro inicio (ISO8601, ej: 2026-06-01T00:00:00Z)"),
-    end_date: Optional[datetime] = Query(None, description="Filtro fin (ISO8601, ej: 2026-07-01T00:00:00Z)")
+    start_date: Optional[date] = Query(None, description="Filtro inicio (YYYY-MM-DD). Solo esta fecha → TODAS las tasas de ese día"),
+    end_date: Optional[date] = Query(None, description="Filtro fin (YYYY-MM-DD). Con start_date forma rango inclusivo de días completos")
 ):
     """
     Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
     Versión 2 — incluye metadatos de paginación y cursor para scrolling infinito.
+
+    Filtro por fecha (YYYY-MM-DD):
+    - `start_date` solo → TODAS las tasas de ese día completo (00:00:00 a 23:59:59).
+    - `start_date` + `end_date` → rango inclusivo de días completos.
     """
     logger.info(f"[API V2 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
     history_key = f"history:rates:{category}"
@@ -225,8 +229,10 @@ async def get_rates_history_v2(
 
     offset = (page - 1) * size
     if start_date or end_date:
-        min_ts = datetime_to_unix(start_date) if start_date else 0
-        max_ts = datetime_to_unix(end_date) if end_date else int(datetime.now().timestamp())
+        if start_date and end_date and end_date < start_date:
+            raise HTTPException(status_code=400, detail="end_date debe ser mayor o igual que start_date")
+        min_ts = datetime_to_unix(datetime.combine(start_date, datetime.min.time())) if start_date else 0
+        max_ts = datetime_to_unix(datetime.combine(end_date, datetime.max.time())) if end_date else datetime_to_unix(datetime.combine(start_date, datetime.max.time()))
         total_records = redis_client.zcount(history_key, min_ts, max_ts)
         raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size + 1)
     else:
