@@ -245,8 +245,8 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 |---|---|---|---|
 | `page` | `int` | 1 | **CAM-14:** Número de página (comienza en 1) |
 | `size` | `int` | 50 | **CAM-14:** Registros por página (máx 100) |
-| `start_date` | `datetime` (ISO8601) | `null` | **CAM-13:** Filtro inicio del rango. Ej: `2026-06-01T00:00:00Z` |
-| `end_date` | `datetime` (ISO8601) | `null` | **CAM-13:** Filtro fin del rango. Ej: `2026-07-01T00:00:00Z` |
+| `start_date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Filtro inicio. Solo esta fecha → **TODAS** las tasas de ese día completo. Ej: `2026-06-01` |
+| `end_date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Filtro fin. Con `start_date` forma rango inclusivo de días completos. Ej: `2026-06-03` |
 
 **Respuesta:**
 
@@ -268,7 +268,10 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 
 **Comportamiento del filtro por fechas (CAM-13):**
 * Sin `start_date` / `end_date` → cuenta total con `ZCARD`, pagina con `ZREVRANGE`.
-* Con fechas → cuenta registros en rango con `ZCOUNT`, pagina con `ZREVRANGEBYSCORE`.
+* `start_date` solo → **día completo**: `00:00:00` a `23:59:59` de esa fecha (`ZCOUNT` + `ZREVRANGEBYSCORE`). Ej: `?start_date=2026-06-01` trae TODAS las tasas del 1 de junio, sin importar la hora.
+* `start_date` + `end_date` → rango **inclusivo** de días completos: `start_date` desde las `00:00:00` y `end_date` hasta las `23:59:59`. Ej: `?start_date=2026-06-01&end_date=2026-06-03` trae las tasas del 1, 2 y 3 de junio.
+* `end_date < start_date` → `400 Bad Request`.
+* Formato inválido → `422 Unprocessable Entity`. Se tolera ISO8601 completo (`2026-06-01T00:00:00Z` se trunca a `2026-06-01`).
 * Si no hay datos en el rango → `history` vacío, `total_records: 0`.
 
 ---
