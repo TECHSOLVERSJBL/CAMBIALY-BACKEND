@@ -28,6 +28,7 @@
    * [3. ¿Qué sucede si tanto Binance como el servicio de contingencia (Yadio) fallan al mismo tiempo?](#3-qué-sucede-si-tanto-binance-como-el-servicio-de-contingencia-yadio-fallan-al-mismo-tiempo)
    * [4. ¿Por qué acoplar el Scheduler al Lifespan de FastAPI en lugar de usar un proceso independiente como Celery?](#4-por-qué-acoplar-el-scheduler-al-lifespan-de-fastapi-en-lugar-de-usar-un-proceso-independiente-como-celery)
    * [5. ¿Cómo se mitiga el envenenamiento de datos o la inserción de payloads corruptos en Redis?](#5-cómo-se-mitiga-el-envenenamiento-de-datos-o-la-inserción-de-payloads-corruptos-en-redis)
+   * [6. ¿Por qué `last_updated` se guarda como timestamp Unix (float) en lugar de `TIMESTAMPTZ`?](#6-por-qué-last_updated-se-guarda-como-timestamp-unix-float-en-lugar-de-timestamptz)
 
 <!-- TOC end -->
 
@@ -53,11 +54,22 @@ Diseñada bajo el patrón de diseño **Template Method Pattern** mediante la cla
 * **`YadioRateWorker` (COP / ARS):** Worker genérico parametrizable por moneda fiat (`app/scrapers.py:209`). Consulta `https://api.yadio.io/exchanges/{fiat}` en intervalos de 15 minutos. Se instancia como `YadioRateWorker(fiat="COP", redis_key="rates:cop")` y `YadioRateWorker(fiat="ARS", redis_key="rates:ars")` para alimentar las tasas de Peso Colombiano y Peso Argentino respectivamente.
 
 <!-- TOC --><a name="2-capa-de-persistencia-y-caché-avanzada-upstash-redis"></a>
-### 2. Capa de Persistencia y Caché Avanzada (Upstash Redis)
-Toda la información recolectada impacta directamente en una infraestructura de Redis administrada en la nube por Upstash. Se maneja un esquema dual de datos altamente eficiente:
+### 2. Capa de Persistencia y Caché Avanzada (Upstash Redis + Neon Postgres)
+La información recolectada impacta en **dos destinos paralelos e independientes**: Redis administrado por Upstash (caché caliente) y Postgres serverless de Neon (historial durable). Esquema dual de datos:
 * **Estado Actual (`String`):** Almacena un objeto JSON serializado en las llaves `rates:bcv`, `rates:binance`, `rates:cop` y `rates:ars` para proveer lecturas inmediatas (< 2ms) a la calculadora y endpoints de tasas.
-* **Registro de Auditoría e Historial (`ZSET` / Sorted Set):** Guarda secuencias cronológicas bajo las llaves `history:rates:bcv`, `history:rates:binance`, `history:rates:cop` y `history:rates:ars`. El índice de ordenamiento (*score*) corresponde al timestamp Unix del evento, permitiendo paginaciones inversas óptimas para alimentar gráficas analíticas y consultas históricas por fecha exacta.
+* **Registro de Auditoría e Historial (`ZSET` / Sorted Set):** Guarda secuencias cronológicas bajo las llaves `history:rates:bcv`, `history:rates:binance`, `history:rates:cop` y `history:rates:ars`. El índice de ordenamiento (*score*) corresponde al timestamp Unix del evento. **Legacy:** se mantiene escribiendo durante la transición, pero la lectura ya no pasa por aquí.
+* **Historial Durable (`Postgres` / Neon):** Tabla `rate_history` (`category`, `source`, `last_updated` como timestamp Unix, `rates` JSONB) con índice `(category, last_updated DESC)`. El endpoint v3 de historial lee exclusivamente de aquí.
 * **Estrategia de Keep-Alive:** Una tarea programada dedicada ejecuta pings de verificación constantes en intervalos de 5 minutos hacia Upstash, previniendo la degradación de conexiones y neutralizando la latencia asociada a los arranques en frío (*cold starts*) en servicios Serverless o gratuitos.
+
+**Flujo de escritura (dual-write):** el worker scrapea una sola vez y escribe **en paralelo** a Upstash y a Neon:
+
+```mermaid
+graph LR
+    W[Worker scrapea<br/>app/scrapers.py] --> R[(Upstash Redis<br/>rates:* + history ZSET legacy)]
+    W --> P[(Neon Postgres<br/>rate_history durable)]
+```
+
+**Upstash NO alimenta a Neon** — son destinos paralelos, no un pipeline. Ambos sobreviven la caída del otro. Única excepción: `scripts/backfill.py` (one-shot manual que migra el ZSET histórico acumulado antes de la migración).
 
 <!-- TOC --><a name="3-ciclo-de-vida-y-orquestación-de-fondo-fastapi-lifespan"></a>
 ### 3. Ciclo de Vida y Orquestación de Fondo (FastAPI Lifespan)
@@ -231,7 +243,7 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 ```
 
 <!-- TOC --><a name="v2-historial-paginado"></a>
-#### **7. Historial Paginado con Filtro por Fechas** — `GET /api/v2/rates/history/{category}`
+#### **7. Historial Paginado con Filtro por Fechas** — `GET /api/v3/rates/history/{category}`
 
 **Parámetros de Ruta:**
 
@@ -245,8 +257,9 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 |---|---|---|---|
 | `page` | `int` | 1 | **CAM-14:** Número de página (comienza en 1) |
 | `size` | `int` | 50 | **CAM-14:** Registros por página (máx 100) |
-| `start_date` | `datetime` (ISO8601) | `null` | **CAM-13:** Filtro inicio del rango. Ej: `2026-06-01T00:00:00Z` |
-| `end_date` | `datetime` (ISO8601) | `null` | **CAM-13:** Filtro fin del rango. Ej: `2026-07-01T00:00:00Z` |
+| `date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Una sola fecha → **TODAS** las tasas de ese día completo. Excluye `start_date`/`end_date`. Ej: `2026-06-01` |
+| `start_date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Filtro inicio. Solo esta fecha → **TODAS** las tasas de ese día completo. Ej: `2026-06-01` |
+| `end_date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Filtro fin. Con `start_date` forma rango inclusivo de días completos. Ej: `2026-06-03` |
 
 **Respuesta:**
 
@@ -267,9 +280,15 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 ```
 
 **Comportamiento del filtro por fechas (CAM-13):**
-* Sin `start_date` / `end_date` → cuenta total con `ZCARD`, pagina con `ZREVRANGE`.
-* Con fechas → cuenta registros en rango con `ZCOUNT`, pagina con `ZREVRANGEBYSCORE`.
+* El historial se lee de **Postgres (Neon)** — tabla `rate_history` (`category`, `source`, `last_updated` unix, `rates` JSONB), índice `(category, last_updated DESC)`. Redis queda solo para la tasa actual.
+* Sin `start_date` / `end_date` / `date` → cuenta total con `COUNT`, pagina con `ORDER BY last_updated DESC + OFFSET/LIMIT`.
+* `date` o `start_date` solo → **día completo**: `00:00:00` a `23:59:59` de esa fecha (`WHERE last_updated BETWEEN`). Ej: `?date=2026-06-01` o `?start_date=2026-06-01` trae TODAS las tasas del 1 de junio, sin importar la hora.
+* `start_date` + `end_date` → rango **inclusivo** de días completos: `start_date` desde las `00:00:00` y `end_date` hasta las `23:59:59`. Ej: `?start_date=2026-06-01&end_date=2026-06-03` trae las tasas del 1, 2 y 3 de junio.
+* `date` mezclado con `start_date`/`end_date` → `400 Bad Request`.
+* `end_date < start_date` → `400 Bad Request`.
+* Formato inválido → `422 Unprocessable Entity`. Se tolera ISO8601 completo (`2026-06-01T00:00:00Z` se trunca a `2026-06-01`).
 * Si no hay datos en el rango → `history` vacío, `total_records: 0`.
+* Sin `DATABASE_URL` configurado → `503 Service Unavailable`.
 
 ---
 
@@ -336,7 +355,7 @@ docker-compose up --build
 <!-- TOC --><a name="diagrama-de-estado-de-datos"></a>
 ### Diagrama de Estado de Datos
 
-Ilustra el ciclo de vida continuo e independiente de los datos de las tasas desde su extracción externa hasta su estructuración en caliente en Redis:
+Ilustra el ciclo de vida continuo e independiente de los datos de las tasas desde su extracción externa hasta su estructuración en los **dos destinos**: caché en caliente en Upstash Redis y historial durable en Neon Postgres:
 ```mermaid
 graph TD
     subgraph Scheduler [APScheduler - Tareas de Fondo]
@@ -369,9 +388,9 @@ graph TD
         O --> P
     end
 
-    subgraph Upstash [Upstash Redis Cloud]
-        P --> Q[(String<br/>rates:binance / rates:bcv / rates:cop / rates:ars)]
-        P --> R[(Sorted Set ZSET<br/>history:rates:binance / bcv / cop / ars)]
+    subgraph Storage [Destinos Dual-write]
+        P --> Q[(Upstash Redis<br/>rates:* + history ZSET legacy)]
+        P --> R[(Neon Postgres<br/>rate_history durable)]
     end
 
     style L fill:#ffcdd2,stroke:#b71c1c,stroke-width:2px
@@ -390,11 +409,12 @@ sequenceDiagram
     actor Usuario as Cliente / Frontend
     participant API as FastAPI Backend (main.py)
     participant Redis as Upstash Redis (Caché)
+    participant DB as Neon Postgres (Historial)
 
     rect rgb(240, 248, 255)
-        note right of Usuario: Escenario A: Consulta de Tasas Actuales o Historial
-        Usuario->>API: GET /api/v1/rates/binance (o /history)
-        API->>Redis: redis_client.get("rates:binance") (o zrevrange)
+        note right of Usuario: Escenario A: Tasas Actuales
+        Usuario->>API: GET /api/v1/rates/binance
+        API->>Redis: redis_client.get("rates:binance")
         Redis-->>API: JSON Serializado de la Caché (< 2ms)
         API-->>Usuario: 200 OK - Respuesta de Tasas Inmediata
     end
@@ -406,6 +426,14 @@ sequenceDiagram
         Redis-->>API: Retorna JSON con tasas vigentes
         API->>API: Ejecutar lógica de negocio interna (to_ves y comparativa)
         API-->>Usuario: 200 OK - Opción Óptima y Ahorro Estimado
+    end
+
+    rect rgb(240, 255, 240)
+        note right of Usuario: Escenario C: Historial Paginado (v3)
+        Usuario->>API: GET /api/v3/rates/history/bcv?start_date=2026-06-01
+        API->>DB: COUNT + SELECT rate_history WHERE last_updated BETWEEN
+        DB-->>API: Filas del historial durable
+        API-->>Usuario: 200 OK - JSON paginado con metadatos
     end
 ```
 
@@ -452,6 +480,20 @@ graph LR
 
 ---
 
+<!-- TOC --><a name="ci-cd-github-actions"></a>
+## 🤖 CI/CD (GitHub Actions)
+
+Workflow `.github/workflows/ci.yml` — se ejecuta en cada push a `main`/`dev` y en cada PR:
+
+| Job | Qué hace | Resultado |
+|---|---|---|
+| `tests` | `uv` + `pip install -r requirements.txt` + `pytest` (37 tests) | ✅/❌ verdes/rojos |
+| `docker-build` | `docker build .` valida que el Dockerfile compila | ✅/❌ |
+
+Sin secretos necesarios (los tests corren con `MockRedis` + SQLite in-memory). Ver estado en la pestaña **Actions** del repositorio. El cron de scraping NO se mueve a GitHub Actions (costo de minutos y latencia por run — ver FAQ).
+
+---
+
 <!-- TOC --><a name="guía-de-despliegue-en-producción-render-upstash"></a>
 ## Guía de Despliegue en Producción (Render + Upstash)
 
@@ -461,6 +503,7 @@ graph LR
 * `APP_ENV=production`
 * `UPSTASH_REDIS_REST_URL=your_redis_connection_url`
 * `UPSTASH_REDIS_REST_TOKEN=your_secret_auth_token`
+* `DATABASE_URL=your_neon_postgres_connection_string` (historial durable — usar el endpoint **pooled** de Neon)
 
 
 4. **Manejo del Estado de Suspensión (Cold Starts):** El plan de alojamiento gratuito de Render congela la instancia HTTP tras 15 minutos de inactividad absoluta. Se recomienda enlazar la ruta `/health` a un monitor de disponibilidad externo automatizado (como *cron-job.org*) configurado para realizar pings recurrentes cada 10 minutos.
@@ -491,6 +534,8 @@ Para el alcance actual del proyecto, una base de datos relacional añadiría una
 * **Complejidad O(log(N) + M)** para recuperar rangos ordenados inversamente (con `ZREVRANGEBYSCORE`), ideal para paginación de gráficas.
 * **Deduplicación automática:** Si por algún desfase de red un proceso se ejecuta dos veces en el mismo segundo con el mismo payload, Redis no duplica la fila, sino que actualiza el score, manteniendo la base de datos limpia.
 
+> **Actualización:** El historial se migró a **Postgres (Neon)** — los ZSET siguen escribiéndose durante la transición (dual-write), pero la lectura del endpoint v3 viene de la tabla `rate_history` (durable, indexada, sin límite de RAM). Redis queda como caché de la tasa actual. (`/api/v2/rates/history/` quedó deprecado como alias.)
+
 <!-- TOC --><a name="3-qué-sucede-si-tanto-binance-como-el-servicio-de-contingencia-yadio-fallan-al-mismo-tiempo"></a>
 ### 3. ¿Qué sucede si tanto Binance como el servicio de contingencia (Yadio) fallan al mismo tiempo?
 El sistema está diseñado bajo el principio de **degradación elegante**. Si `BinanceWorker` falla, conmuta a Yadio; si Yadio también experimenta una caída extrema, la excepción es interceptada y registrada por el core del `BaseRateWorker` sin alterar el estado de Redis. 
@@ -506,6 +551,22 @@ Al integrar `APScheduler` directamente en el `asynccontextmanager` de `lifespan`
 La aplicación implementa una validación estructural estricta en dos capas:
 1. **Validación del Scraping:** Antes de proceder con la serialización a JSON, los trabajadores verifican la existencia física de las claves esperadas en las respuestas de las APIs (`data`, `adv`, `price`). Si la estructura muta o falta un campo, se dispara el bloque `except` inmediato en lugar de persistir datos corruptos o nulos.
 2. **Validación de Tipos de Salida:** Las respuestas entregadas por `fetch_rate()` se fuerzan a cumplir con un contrato estricto de diccionarios con valores flotantes redondeados a dos decimales, garantizando consistencia matemática absoluta para la calculadora.
+
+<!-- TOC --><a name="6-por-qué-last_updated-se-guarda-como-timestamp-unix-float-en-lugar-de-timestamptz"></a>
+### 6. ¿Por qué `last_updated` se guarda como timestamp Unix (float) en lugar de `TIMESTAMPTZ`?
+Decisión deliberada por 3 razones:
+
+1. **Compatibilidad con el score ZSET existente:** Los workers ya guardaban `current_time.timestamp()` como score del Sorted Set (`app/scrapers.py`). Guardar la columna en el mismo formato permite que el **backfill** (`scripts/backfill.py`) migre los datos de Redis a Postgres **sin conversión** — el score viaja directo a `last_updated`. Con `TIMESTAMPTZ` cada fila habría requerido conversión datetime (riesgo de errores de timezone).
+
+2. **Portabilidad entre bases para los tests:** Los tests corren contra **SQLite in-memory** (`tests/conftest.py`) mientras producción usa **Postgres**. `TIMESTAMPTZ` se comporta distinto entre ambas (SQLite almacena strings, Postgres binario tz-aware), lo que haría las comparaciones de rango dependientes del motor. Un **float compara numéricamente idéntico en cualquier base**: `last_updated >= min AND <= max` es matemática pura.
+
+3. **Cero ambigüedad de timezone:** El epoch Unix es absoluto UTC — no hay duda de "¿UTC o local?" al almacenar. La zona horaria solo interviene en la **presentación**, donde el helper `_rate_history_to_payload` (`app/main.py`) convierte el float a ISO-8601 con sufijo `Z`.
+
+**Trade-offs asumidos:**
+* Menos legibilidad al inspeccionar la DB (`1780308000.0` en vez de `2026-06-01 00:00:00`).
+* Las consultas SQL con funciones de fecha requieren `to_timestamp(last_updated)` (Postgres lo soporta nativamente, por lo que agregados por día/mes siguen siendo posibles).
+
+Si en el futuro se necesita `date_trunc` pesado directamente en SQL, la columna se puede migrar a `TIMESTAMPTZ` con un `ALTER` + conversión one-shot.
 
 ---
 

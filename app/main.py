@@ -5,13 +5,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, APIRouter
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.exceptions import StarletteHTTPException
 from app.schemas import CalculationRequest, RateResponseDTO, RateHistoricalDTO
-from app.database import redis_client
+from app.database import redis_client, AsyncSessionLocal
+from app.models import RateHistory
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal, Union
-from datetime import datetime
+from datetime import date, datetime, timezone
+from sqlalchemy import func, select
 from app.utils import datetime_to_unix
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -84,6 +86,8 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
         content={"error": "Demasiadas solicitudes. Intenta de nuevo en un minuto."}
     )
 # ========== Middleware CORS ==========
+# Staging/Producción: definir ALLOWED_ORIGINS en el entorno (ej: "https://frontend.com,https://app.vercel.app").
+# Sin la variable → CORS restrictivo (sin orígenes permitidos).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -100,7 +104,6 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
-
 # ========== MANEJADORES DE ERRORES ==========
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -172,73 +175,149 @@ async def get_rates_history(
     return {"category": category, "history": parsed}
 
 
-@app.get("/api/v2/rates/history/{category}", tags=["Historial"])
-async def get_rates_history_v2(
+def _rate_history_to_payload(row: RateHistory) -> dict:
+    """Convierte una fila de Postgres al payload JSON que devolvía el ZSET de Redis."""
+    return {
+        "source": row.source,
+        "last_updated": datetime.fromtimestamp(row.last_updated, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "rates": row.rates,
+    }
+
+
+@app.get("/api/v3/rates/history/{category}", tags=["Historial"])
+async def get_rates_history_v3(
     category: Literal["bcv", "binance", "cop", "ars"],
-    page: int = Query(default=1, ge=1, description="Número de página"),
-    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
-    cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
-    start_date: Optional[datetime] = Query(None, description="Filtro inicio (ISO8601, ej: 2026-06-01T00:00:00Z)"),
-    end_date: Optional[datetime] = Query(None, description="Filtro fin (ISO8601, ej: 2026-07-01T00:00:00Z)")
+    page: int = Query(default=1, ge=1, description="Página que quieres (empieza en 1). Botones ← → del frontend"),
+    size: int = Query(default=50, ge=1, le=100, description="Cuántos registros traer por página (1 a 100)"),
+    cursor: Optional[str] = Query(None, description="Para scroll infinito: 'dame los que siguen después de esta fecha'. Copia el next_cursor de la respuesta anterior. Mutuamente excluyente con page"),
+    date: Optional[date] = Query(None, description="Una sola fecha (YYYY-MM-DD) → TODAS las tasas de ese día (00:00:00 a 23:59:59)"),
+    start_date: Optional[date] = Query(None, description="Inicio de rango (YYYY-MM-DD). Solo esta fecha → TODAS las tasas de ese día"),
+    end_date: Optional[date] = Query(None, description="Fin de rango (YYYY-MM-DD). Con start_date → rango inclusivo de días completos")
 ):
     """
-    Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
-    Versión 2 — incluye metadatos de paginación y cursor para scrolling infinito.
+    Historial de tasas guardado en Postgres, del **más reciente al más antiguo**.
+    Nunca devuelve todo junto: usa paginación y trae pedazos.
+
+    ## Cómo paginar (elige UNO de los dos estilos)
+
+    ### 1. page + size (botones ← →, la fácil)
+    `size` = cuántos registros por página. `page` = qué página lees.
+
+    ```
+    ?page=1&size=50   → los 50 más recientes
+    ?page=2&size=50   → los siguientes 50
+    ```
+
+    La respuesta devuelve `has_more` (¿hay más páginas?) y `total_records`
+    (total existente, para el contador "1-50 de 1200").
+
+    ### 2. cursor (scroll infinito, tipo Instagram)
+    Cada respuesta trae `next_cursor` — cópialo tal cual al siguiente request:
+
+    ```
+    1er:  ?size=50                          → next_cursor: "2026-06-15T14:30:00Z"
+    2do:  ?size=50&cursor=2026-06-15T14:30:00Z  → next_cursor: "2026-06-01T09:00:00Z"
+    3er:  ?size=50&cursor=2026-06-01T09:00:00Z  → has_more: false  ← fin, detén el scroll
+    ```
+
+    Regla: si `has_more == false` o `next_cursor == null`, no hay más.
+
+    ## Filtrar por fecha (YYYY-MM-DD)
+
+    ```
+    ?date=2026-06-01&size=100
+      → TODAS las tasas del 1 de junio (de 00:00:00 a 23:59:59)
+
+    ?start_date=2026-06-01&end_date=2026-06-03&size=100
+      → tasas del 1, 2 Y 3 de junio (el día final se incluye)
+
+    ?start_date=2026-01-01&end_date=2026-06-30&page=2&size=50
+      → 2da página del rango enero–junio (fecha + paginación combinadas)
+    ```
+
+    💡 Un día tiene máximo ~96 registros (4 fuentes × cada 15 min):
+    con `size=100` un día completo entra en UNA sola página.
+
+    ## Respuesta
+
+    ```json
+    {
+      "category": "bcv",
+      "page": 1,              ← página actual (te la devuelve)
+      "size": 50,             ← cuántos pediste
+      "total_records": 1200,  ← total existente (para el contador)
+      "has_more": true,       ← true = hay más, botón "siguiente" visible
+      "next_cursor": null,    ← se llena solo con scroll infinito
+      "history": [
+        { "source": "BCV", "last_updated": "2026-06-15T14:30:00.123456Z", "rates": {"USD": 45.20} }
+      ]
+    }
+    ```
+
+    ## Errores
+
+    | Código | Cuándo |
+    |---|---|
+    | 400 | `end_date` antes que `start_date`, o `date` mezclado con `start_date`/`end_date` |
+    | 400 | Cursor en formato inválido |
+    | 422 | Formato inválido: `page=0`, `size=200`, fecha que no es fecha |
+    | 503 | `DATABASE_URL` no configurado en el servidor |
     """
-    logger.info(f"[API V2 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
-    history_key = f"history:rates:{category}"
-    total_records = redis_client.zcard(history_key)
+    if AsyncSessionLocal is None:
+        raise HTTPException(status_code=503, detail="Historial no disponible: DATABASE_URL no configurado")
+    if date and (start_date or end_date):
+        raise HTTPException(status_code=400, detail="date es mutuamente excluyente con start_date/end_date")
+    logger.info(f"[API V3 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
 
-    if cursor:
-        try:
-            if cursor.endswith("Z") or "T" in cursor:
-                max_ts = datetime_to_unix(datetime.fromisoformat(cursor.replace("Z", "+00:00")))
-            else:
-                max_ts = float(cursor)
-        except Exception as err:
-            logger.error(f"[API V2 History] Error parsing cursor '{cursor}': {err}")
-            raise HTTPException(status_code=400, detail="Formato de cursor inválido")
+    async with AsyncSessionLocal() as session:
+        if cursor:
+            try:
+                if cursor.endswith("Z") or "T" in cursor:
+                    max_ts = datetime_to_unix(datetime.fromisoformat(cursor.replace("Z", "+00:00")))
+                else:
+                    max_ts = float(cursor)
+            except Exception as err:
+                logger.error(f"[API V3 History] Error parsing cursor '{cursor}': {err}")
+                raise HTTPException(status_code=400, detail="Formato de cursor inválido")
 
-        # Exclusive score max limit using '(' or strict float subtraction
-        raw_history = redis_client.zrevrangebyscore(history_key, f"({max_ts}", 0, start=0, num=size + 1)
-        if not raw_history:
-            # Fallback for floating subtraction if '(' syntax unsupported by mock
-            raw_history = redis_client.zrevrangebyscore(history_key, max_ts - 0.000001, 0, start=0, num=size + 1)
+            total_records = (
+                await session.execute(
+                    select(func.count()).select_from(RateHistory).where(RateHistory.category == category)
+                )
+            ).scalar_one()
+            stmt = (
+                select(RateHistory)
+                .where(RateHistory.category == category, RateHistory.last_updated < max_ts)
+                .order_by(RateHistory.last_updated.desc())
+                .limit(size + 1)
+            )
+        else:
+            offset = (page - 1) * size
+            stmt = select(RateHistory).where(RateHistory.category == category)
+            if date:
+                min_ts = datetime_to_unix(datetime.combine(date, datetime.min.time()))
+                max_ts = datetime_to_unix(datetime.combine(date, datetime.max.time()))
+                stmt = stmt.where(RateHistory.last_updated >= min_ts, RateHistory.last_updated <= max_ts)
+            elif start_date or end_date:
+                if start_date and end_date and end_date < start_date:
+                    raise HTTPException(status_code=400, detail="end_date debe ser mayor o igual que start_date")
+                min_ts = datetime_to_unix(datetime.combine(start_date, datetime.min.time())) if start_date else 0
+                max_ts = datetime_to_unix(datetime.combine(end_date, datetime.max.time())) if end_date else datetime_to_unix(datetime.combine(start_date, datetime.max.time()))
+                stmt = stmt.where(RateHistory.last_updated >= min_ts, RateHistory.last_updated <= max_ts)
+            total_records = (
+                await session.execute(select(func.count()).select_from(stmt.subquery()))
+            ).scalar_one()
+            stmt = stmt.order_by(RateHistory.last_updated.desc()).offset(offset).limit(size + 1)
 
-        has_more = len(raw_history) > size
-        if has_more:
-            raw_history = raw_history[:size]
+        rows = (await session.execute(stmt)).scalars().all()
 
-        parsed = [json.loads(item) for item in raw_history]
-        next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
-        logger.info(f"[API V2 History] Cursor query returned {len(parsed)} items. next_cursor={next_cursor}, has_more={has_more}")
-
-        return {
-            "category": category,
-            "page": page,
-            "size": size,
-            "total_records": total_records,
-            "next_cursor": next_cursor,
-            "has_more": has_more,
-            "history": parsed
-        }
-
-    offset = (page - 1) * size
-    if start_date or end_date:
-        min_ts = datetime_to_unix(start_date) if start_date else 0
-        max_ts = datetime_to_unix(end_date) if end_date else int(datetime.now().timestamp())
-        total_records = redis_client.zcount(history_key, min_ts, max_ts)
-        raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size + 1)
-    else:
-        raw_history = redis_client.zrevrange(history_key, offset, offset + size)
-
-    has_more = len(raw_history) > size
+    has_more = len(rows) > size
     if has_more:
-        raw_history = raw_history[:size]
+        rows = rows[:size]
 
-    parsed = [json.loads(item) for item in raw_history]
+    parsed = [_rate_history_to_payload(row) for row in rows]
     next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
-    logger.info(f"[API V2 History] Page query returned {len(parsed)} items. total_records={total_records}, next_cursor={next_cursor}, has_more={has_more}")
+    logger.info(f"[API V3 History] Page query returned {len(parsed)} items. total_records={total_records}, next_cursor={next_cursor}, has_more={has_more}")
 
     return {
         "category": category,
@@ -249,6 +328,20 @@ async def get_rates_history_v2(
         "has_more": has_more,
         "history": parsed
     }
+
+
+@app.get("/api/v2/rates/history/{category}", tags=["Historial"], deprecated=True)
+async def get_rates_history_v2_legacy(
+    category: Literal["bcv", "binance", "cop", "ars"],
+    page: int = Query(default=1, ge=1, description="Número de página"),
+    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
+    cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
+    date: Optional[date] = Query(None, description="DEPRECADO — usa v3. Una sola fecha (YYYY-MM-DD)"),
+    start_date: Optional[date] = Query(None, description="DEPRECADO — usa v3. Filtro inicio (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="DEPRECADO — usa v3. Filtro fin (YYYY-MM-DD)")
+):
+    """Deprecado — usa `GET /api/v3/rates/history/{category}`. Misma lógica, se mantiene por compatibilidad."""
+    return await get_rates_history_v3(category, page, size, cursor, date, start_date, end_date)
 
 
 security = HTTPBasic()
@@ -485,11 +578,33 @@ async def get_ars_rate(
 app.include_router(rates_router_v2)
 
 
+@app.get("/scalar", include_in_schema=False, tags=["Sistema"])
+async def scalar_docs():
+    """Documentación interactiva de la API (Scalar UI — moderna, con temas y ejemplos).
+    Alternativa visual a Swagger (/docs). Sirve el mismo OpenAPI de /openapi.json."""
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Cambialy API — Documentación (Scalar)</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>body { margin: 0; }</style>
+      </head>
+      <body>
+        <script id="api-reference" data-url="/openapi.json"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+      </body>
+    </html>
+    """)
+
+
 @app.get("/", tags=["Sistema"])
 async def root():
     return {
-        "message": "Bienvenido a la API de Cambialy. Consulta /docs para ver la documentación completa.",
+        "message": "Bienvenido a la API de Cambialy. Consulta /docs o /scalar para ver la documentación completa.",
         "docs": "/docs",
+        "scalar": "/scalar",
         "status": "healthy",
         "disclaimer": ("""
                ⚖️ **Descargo de Responsabilidad / Disclaimer**
