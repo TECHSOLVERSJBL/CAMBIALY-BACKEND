@@ -54,11 +54,22 @@ Diseñada bajo el patrón de diseño **Template Method Pattern** mediante la cla
 * **`YadioRateWorker` (COP / ARS):** Worker genérico parametrizable por moneda fiat (`app/scrapers.py:209`). Consulta `https://api.yadio.io/exchanges/{fiat}` en intervalos de 15 minutos. Se instancia como `YadioRateWorker(fiat="COP", redis_key="rates:cop")` y `YadioRateWorker(fiat="ARS", redis_key="rates:ars")` para alimentar las tasas de Peso Colombiano y Peso Argentino respectivamente.
 
 <!-- TOC --><a name="2-capa-de-persistencia-y-caché-avanzada-upstash-redis"></a>
-### 2. Capa de Persistencia y Caché Avanzada (Upstash Redis)
-Toda la información recolectada impacta directamente en una infraestructura de Redis administrada en la nube por Upstash. Se maneja un esquema dual de datos altamente eficiente:
+### 2. Capa de Persistencia y Caché Avanzada (Upstash Redis + Neon Postgres)
+La información recolectada impacta en **dos destinos paralelos e independientes**: Redis administrado por Upstash (caché caliente) y Postgres serverless de Neon (historial durable). Esquema dual de datos:
 * **Estado Actual (`String`):** Almacena un objeto JSON serializado en las llaves `rates:bcv`, `rates:binance`, `rates:cop` y `rates:ars` para proveer lecturas inmediatas (< 2ms) a la calculadora y endpoints de tasas.
-* **Registro de Auditoría e Historial (`ZSET` / Sorted Set):** Guarda secuencias cronológicas bajo las llaves `history:rates:bcv`, `history:rates:binance`, `history:rates:cop` y `history:rates:ars`. El índice de ordenamiento (*score*) corresponde al timestamp Unix del evento, permitiendo paginaciones inversas óptimas para alimentar gráficas analíticas y consultas históricas por fecha exacta.
+* **Registro de Auditoría e Historial (`ZSET` / Sorted Set):** Guarda secuencias cronológicas bajo las llaves `history:rates:bcv`, `history:rates:binance`, `history:rates:cop` y `history:rates:ars`. El índice de ordenamiento (*score*) corresponde al timestamp Unix del evento. **Legacy:** se mantiene escribiendo durante la transición, pero la lectura ya no pasa por aquí.
+* **Historial Durable (`Postgres` / Neon):** Tabla `rate_history` (`category`, `source`, `last_updated` como timestamp Unix, `rates` JSONB) con índice `(category, last_updated DESC)`. El endpoint v3 de historial lee exclusivamente de aquí.
 * **Estrategia de Keep-Alive:** Una tarea programada dedicada ejecuta pings de verificación constantes en intervalos de 5 minutos hacia Upstash, previniendo la degradación de conexiones y neutralizando la latencia asociada a los arranques en frío (*cold starts*) en servicios Serverless o gratuitos.
+
+**Flujo de escritura (dual-write):** el worker scrapea una sola vez y escribe **en paralelo** a Upstash y a Neon:
+
+```mermaid
+graph LR
+    W[Worker scrapea<br/>app/scrapers.py] --> R[(Upstash Redis<br/>rates:* + history ZSET legacy)]
+    W --> P[(Neon Postgres<br/>rate_history durable)]
+```
+
+**Upstash NO alimenta a Neon** — son destinos paralelos, no un pipeline. Ambos sobreviven la caída del otro. Única excepción: `scripts/backfill.py` (one-shot manual que migra el ZSET histórico acumulado antes de la migración).
 
 <!-- TOC --><a name="3-ciclo-de-vida-y-orquestación-de-fondo-fastapi-lifespan"></a>
 ### 3. Ciclo de Vida y Orquestación de Fondo (FastAPI Lifespan)
@@ -457,6 +468,20 @@ graph LR
     style H4 fill:#ffffff,stroke:#333333
     style H5 fill:#ffffff,stroke:#333333
 ```
+
+---
+
+<!-- TOC --><a name="ci-cd-github-actions"></a>
+## 🤖 CI/CD (GitHub Actions)
+
+Workflow `.github/workflows/ci.yml` — se ejecuta en cada push a `main`/`dev` y en cada PR:
+
+| Job | Qué hace | Resultado |
+|---|---|---|
+| `tests` | `uv` + `pip install -r requirements.txt` + `pytest` (37 tests) | ✅/❌ verdes/rojos |
+| `docker-build` | `docker build .` valida que el Dockerfile compila | ✅/❌ |
+
+Sin secretos necesarios (los tests corren con `MockRedis` + SQLite in-memory). Ver estado en la pestaña **Actions** del repositorio. El cron de scraping NO se mueve a GitHub Actions (costo de minutos y latencia por run — ver FAQ).
 
 ---
 
