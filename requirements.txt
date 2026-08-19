@@ -8,7 +8,12 @@ upstash-redis==0.10.0
 apscheduler==3.11.2
 slowapi==0.1.10
 
+# Persistencia (Postgres vía Neon)
+sqlalchemy==2.0.36
+psycopg[binary]==3.2.3
+
 # Testing
 pytest==7.4.4
 pytest-asyncio==0.21.2
 pytest-cov==6.0.0
+aiosqlite==0.20.0
