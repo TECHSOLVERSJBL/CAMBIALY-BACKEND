@@ -8,10 +8,12 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import StarletteHTTPException
 from app.schemas import CalculationRequest, RateResponseDTO, RateHistoricalDTO
-from app.database import redis_client
+from app.database import redis_client, AsyncSessionLocal
+from app.models import RateHistory
 from app.scheduler import start_background_tasks, run_bcv_worker, run_binance_worker, run_cop_worker, run_ars_worker
 from typing import Optional, Literal, Union
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from sqlalchemy import func, select
 from app.utils import datetime_to_unix
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -172,6 +174,15 @@ async def get_rates_history(
     return {"category": category, "history": parsed}
 
 
+def _rate_history_to_payload(row: RateHistory) -> dict:
+    """Convierte una fila de Postgres al payload JSON que devolvía el ZSET de Redis."""
+    return {
+        "source": row.source,
+        "last_updated": datetime.fromtimestamp(row.last_updated, tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+        "rates": row.rates,
+    }
+
+
 @app.get("/api/v2/rates/history/{category}", tags=["Historial"])
 async def get_rates_history_v2(
     category: Literal["bcv", "binance", "cop", "ars"],
@@ -184,65 +195,59 @@ async def get_rates_history_v2(
     """
     Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
     Versión 2 — incluye metadatos de paginación y cursor para scrolling infinito.
+    El historial se lee de Postgres (durable); Redis solo sirve la tasa actual.
 
     Filtro por fecha (YYYY-MM-DD):
     - `start_date` solo → TODAS las tasas de ese día completo (00:00:00 a 23:59:59).
     - `start_date` + `end_date` → rango inclusivo de días completos.
     """
+    if AsyncSessionLocal is None:
+        raise HTTPException(status_code=503, detail="Historial no disponible: DATABASE_URL no configurado")
     logger.info(f"[API V2 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
-    history_key = f"history:rates:{category}"
-    total_records = redis_client.zcard(history_key)
 
-    if cursor:
-        try:
-            if cursor.endswith("Z") or "T" in cursor:
-                max_ts = datetime_to_unix(datetime.fromisoformat(cursor.replace("Z", "+00:00")))
-            else:
-                max_ts = float(cursor)
-        except Exception as err:
-            logger.error(f"[API V2 History] Error parsing cursor '{cursor}': {err}")
-            raise HTTPException(status_code=400, detail="Formato de cursor inválido")
+    async with AsyncSessionLocal() as session:
+        if cursor:
+            try:
+                if cursor.endswith("Z") or "T" in cursor:
+                    max_ts = datetime_to_unix(datetime.fromisoformat(cursor.replace("Z", "+00:00")))
+                else:
+                    max_ts = float(cursor)
+            except Exception as err:
+                logger.error(f"[API V2 History] Error parsing cursor '{cursor}': {err}")
+                raise HTTPException(status_code=400, detail="Formato de cursor inválido")
 
-        # Exclusive score max limit using '(' or strict float subtraction
-        raw_history = redis_client.zrevrangebyscore(history_key, f"({max_ts}", 0, start=0, num=size + 1)
-        if not raw_history:
-            # Fallback for floating subtraction if '(' syntax unsupported by mock
-            raw_history = redis_client.zrevrangebyscore(history_key, max_ts - 0.000001, 0, start=0, num=size + 1)
+            total_records = (
+                await session.execute(
+                    select(func.count()).select_from(RateHistory).where(RateHistory.category == category)
+                )
+            ).scalar_one()
+            stmt = (
+                select(RateHistory)
+                .where(RateHistory.category == category, RateHistory.last_updated < max_ts)
+                .order_by(RateHistory.last_updated.desc())
+                .limit(size + 1)
+            )
+        else:
+            offset = (page - 1) * size
+            stmt = select(RateHistory).where(RateHistory.category == category)
+            if start_date or end_date:
+                if start_date and end_date and end_date < start_date:
+                    raise HTTPException(status_code=400, detail="end_date debe ser mayor o igual que start_date")
+                min_ts = datetime_to_unix(datetime.combine(start_date, datetime.min.time())) if start_date else 0
+                max_ts = datetime_to_unix(datetime.combine(end_date, datetime.max.time())) if end_date else datetime_to_unix(datetime.combine(start_date, datetime.max.time()))
+                stmt = stmt.where(RateHistory.last_updated >= min_ts, RateHistory.last_updated <= max_ts)
+            total_records = (
+                await session.execute(select(func.count()).select_from(stmt.subquery()))
+            ).scalar_one()
+            stmt = stmt.order_by(RateHistory.last_updated.desc()).offset(offset).limit(size + 1)
 
-        has_more = len(raw_history) > size
-        if has_more:
-            raw_history = raw_history[:size]
+        rows = (await session.execute(stmt)).scalars().all()
 
-        parsed = [json.loads(item) for item in raw_history]
-        next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
-        logger.info(f"[API V2 History] Cursor query returned {len(parsed)} items. next_cursor={next_cursor}, has_more={has_more}")
-
-        return {
-            "category": category,
-            "page": page,
-            "size": size,
-            "total_records": total_records,
-            "next_cursor": next_cursor,
-            "has_more": has_more,
-            "history": parsed
-        }
-
-    offset = (page - 1) * size
-    if start_date or end_date:
-        if start_date and end_date and end_date < start_date:
-            raise HTTPException(status_code=400, detail="end_date debe ser mayor o igual que start_date")
-        min_ts = datetime_to_unix(datetime.combine(start_date, datetime.min.time())) if start_date else 0
-        max_ts = datetime_to_unix(datetime.combine(end_date, datetime.max.time())) if end_date else datetime_to_unix(datetime.combine(start_date, datetime.max.time()))
-        total_records = redis_client.zcount(history_key, min_ts, max_ts)
-        raw_history = redis_client.zrevrangebyscore(history_key, max_ts, min_ts, start=offset, num=size + 1)
-    else:
-        raw_history = redis_client.zrevrange(history_key, offset, offset + size)
-
-    has_more = len(raw_history) > size
+    has_more = len(rows) > size
     if has_more:
-        raw_history = raw_history[:size]
+        rows = rows[:size]
 
-    parsed = [json.loads(item) for item in raw_history]
+    parsed = [_rate_history_to_payload(row) for row in rows]
     next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
     logger.info(f"[API V2 History] Page query returned {len(parsed)} items. total_records={total_records}, next_cursor={next_cursor}, has_more={has_more}")
 
