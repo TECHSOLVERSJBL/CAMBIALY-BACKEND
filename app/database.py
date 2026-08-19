@@ -3,6 +3,7 @@ import os
 import redis
 from dotenv import load_dotenv
 import logging
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -132,3 +133,24 @@ else:
     redis_client = MockRedis()
 
 redis_db = redis_client
+
+# ── Postgres (Neon) para el historial ──
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+AsyncSessionLocal = None
+if DATABASE_URL:
+    try:
+        db_url = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+        pg_engine = create_async_engine(
+            db_url,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=5,
+        )
+        AsyncSessionLocal = async_sessionmaker(pg_engine, expire_on_commit=False, class_=AsyncSession)
+        logger.info("Conectado a Postgres (Neon)")
+    except Exception as e:
+        logger.error(f"Error configurando Postgres: {e}, historial deshabilitado")
+        AsyncSessionLocal = None
+else:
+    logger.warning("DATABASE_URL no configurado — historial Postgres deshabilitado")
