@@ -267,12 +267,14 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 ```
 
 **Comportamiento del filtro por fechas (CAM-13):**
-* Sin `start_date` / `end_date` → cuenta total con `ZCARD`, pagina con `ZREVRANGE`.
-* `start_date` solo → **día completo**: `00:00:00` a `23:59:59` de esa fecha (`ZCOUNT` + `ZREVRANGEBYSCORE`). Ej: `?start_date=2026-06-01` trae TODAS las tasas del 1 de junio, sin importar la hora.
+* El historial se lee de **Postgres (Neon)** — tabla `rate_history` (`category`, `source`, `last_updated` unix, `rates` JSONB), índice `(category, last_updated DESC)`. Redis queda solo para la tasa actual.
+* Sin `start_date` / `end_date` → cuenta total con `COUNT`, pagina con `ORDER BY last_updated DESC + OFFSET/LIMIT`.
+* `start_date` solo → **día completo**: `00:00:00` a `23:59:59` de esa fecha (`WHERE last_updated BETWEEN`). Ej: `?start_date=2026-06-01` trae TODAS las tasas del 1 de junio, sin importar la hora.
 * `start_date` + `end_date` → rango **inclusivo** de días completos: `start_date` desde las `00:00:00` y `end_date` hasta las `23:59:59`. Ej: `?start_date=2026-06-01&end_date=2026-06-03` trae las tasas del 1, 2 y 3 de junio.
 * `end_date < start_date` → `400 Bad Request`.
 * Formato inválido → `422 Unprocessable Entity`. Se tolera ISO8601 completo (`2026-06-01T00:00:00Z` se trunca a `2026-06-01`).
 * Si no hay datos en el rango → `history` vacío, `total_records: 0`.
+* Sin `DATABASE_URL` configurado → `503 Service Unavailable`.
 
 ---
 
@@ -464,6 +466,7 @@ graph LR
 * `APP_ENV=production`
 * `UPSTASH_REDIS_REST_URL=your_redis_connection_url`
 * `UPSTASH_REDIS_REST_TOKEN=your_secret_auth_token`
+* `DATABASE_URL=your_neon_postgres_connection_string` (historial durable — usar el endpoint **pooled** de Neon)
 
 
 4. **Manejo del Estado de Suspensión (Cold Starts):** El plan de alojamiento gratuito de Render congela la instancia HTTP tras 15 minutos de inactividad absoluta. Se recomienda enlazar la ruta `/health` a un monitor de disponibilidad externo automatizado (como *cron-job.org*) configurado para realizar pings recurrentes cada 10 minutos.
@@ -493,6 +496,8 @@ Buscar las tasas de cambio de portales como el BCV o plataformas P2P en el mismo
 Para el alcance actual del proyecto, una base de datos relacional añadiría una sobrecarga innecesaria de infraestructura (gestión de conexiones concurrentes, migraciones y latencia de disco). Los **Sorted Sets de Redis** permiten ordenar elementos basándose en una puntuación (*score*) numérica de forma nativa. Al utilizar el timestamp Unix como *score*, obtenemos:
 * **Complejidad O(log(N) + M)** para recuperar rangos ordenados inversamente (con `ZREVRANGEBYSCORE`), ideal para paginación de gráficas.
 * **Deduplicación automática:** Si por algún desfase de red un proceso se ejecuta dos veces en el mismo segundo con el mismo payload, Redis no duplica la fila, sino que actualiza el score, manteniendo la base de datos limpia.
+
+> **Actualización:** El historial se migró a **Postgres (Neon)** — los ZSET siguen escribiéndose durante la transición (dual-write), pero la lectura del endpoint v2 viene de la tabla `rate_history` (durable, indexada, sin límite de RAM). Redis queda como caché de la tasa actual.
 
 <!-- TOC --><a name="3-qué-sucede-si-tanto-binance-como-el-servicio-de-contingencia-yadio-fallan-al-mismo-tiempo"></a>
 ### 3. ¿Qué sucede si tanto Binance como el servicio de contingencia (Yadio) fallan al mismo tiempo?
