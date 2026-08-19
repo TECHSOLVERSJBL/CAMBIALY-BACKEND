@@ -1,513 +1,568 @@
+## CAMBIALY (BACKEND)
 
-- [AHORRAVE](#ahorrave)
-   * [**API** Exchange Convenience Calculator (**VES**/**USD**/**EUR**)](#api-exchange-convenience-calculator-vesusdeur)
-   * [🏗️ System Architecture](#-system-architecture)
-   * [📁 Folder structure ](#-folder-structure)
-      + [Quick Overview:](#quick-overview)
-      + [Structure considerations](#structure-considerations)
-   * [🛠️ Technologies Used](#-technologies-used)
-   * [🔌 API Endpoints (Routes)](#-api-endpoints-routes)
-      + [**1. Get BCV Day Rates**](#1-get-bcv-day-rates)
-      + [**2. Get Binance Daily Rates**](#2-get-binance-daily-rates)
-      + [2. Calculate Convenience](#2-calculate-convenience)
-      + [What would this look like in practice?](#what-would-this-look-like-in-practice)
-         - [Case 1: Compare cash vs. transfer (Rate of the day)](#case-1-compare-cash-vs-transfer-rate-of-the-day)
-         - [Case 2: The trade has "phantom" prices at the BCV rate](#case-2-the-trade-has-phantom-prices-at-the-bcv-rate)
-         - [Case 3: You want to see if the store rate beats the black market (Binance)](#case-3-you-want-to-see-if-the-store-rate-beats-the-black-market-binance)
-   * [Development Plan (2 Week Schedule)](#development-plan-2-week-schedule)
-         - [Week 1: Extraction and Core Logic (Pure Backend) ](#week-1-extraction-and-core-logic-pure-backend)
-         - [Week 2: **API**, Deployment and Testing ](#week-2-api-deployment-and-testing)
-      + [Clone the repository:](#clone-the-repository)
-      + [Create and initialize the Virtual Environment: ](#create-and-initialize-the-virtual-environment)
-      + [Install dependencies: ](#install-dependencies)
-      + [Run the API in development mode: ](#run-the-api-in-development-mode)
-      + [Build and run the container: ](#build-and-run-the-container)
-      + [Stop containers:](#stop-containers)
-      + [Test the **API** AND DIAGRAMS](#test-the-api-and-diagrams)
-      + [Data State Diagram](#data-state-diagram)
-      + [Data flow diagram](#data-flow-diagram)
-      + [Data Model Diagram (Redis)](#data-model-diagram-redis)
-      + [Normalization Decision Diagram](#normalization-decision-diagram)
-   * [Production Deployment Guide (Render + Upstash)](#production-deployment-guide-render-upstash)
-      + [1. Database: Upstash Redis](#1-database-upstash-redis)
-      + [2. API deployment: Render](#2-api-deployment-render)
-      + [3. Solving common problems in production](#3-solving-common-problems-in-production)
-         - [Mistake: `cannot import name 'Redis' from 'upstash_redis'`](#mistake-cannot-import-name-redis-from-upstash_redis)
-         - [Mistake: `Error Upstash: usando MockRedis`](#mistake-error-upstash-usando-mockredis)
-      + [4. Local Development (without Upstash)](#4-local-development-without-upstash)
-      + [5. Future updates](#5-future-updates)
-   * [❓ FAQ: Technical Project Decisions](#-faq-technical-project-decisions)
-      + [1. Why FastAPI and not another framework like Flask or Django?](#1-why-fastapi-and-not-another-framework-like-flask-or-django)
-      + [2. Why do we need Redis? Isn't a normal database enough?](#2-why-do-we-need-redis-isnt-a-normal-database-enough)
-      + [3. Why do we include "Background Tasks"?](#3-why-do-we-include-background-tasks)
-      + [4. Is this level of complexity really necessary for something so "small"?](#4-is-this-level-of-complexity-really-necessary-for-something-so-small)
-      + [5. How do scrapers work?](#5-how-do-scrapers-work)
+- [**API** Exchange Convenience Calculator (**VES**/**USD**/**EUR**)](#api-exchange-convenience-calculator-vesusdeur)
+- [🏗️ System Architecture](#️-system-architecture)
+   * [1. Resilient Extraction Infrastructure (Scrapers)](#1-resilient-extraction-infrastructure-scrapers)
+   * [2. Persistence and Advanced Cache Layer (Upstash Redis + Neon Postgres)](#2-persistence-and-advanced-cache-layer-upstash-redis--neon-postgres)
+   * [3. Background Lifecycle and Orchestration (FastAPI Lifespan)](#3-background-lifecycle-and-orchestration-fastapi-lifespan)
+- [📁 Folder Structure](#-folder-structure)
+   * [Quick overview of key files:](#quick-overview-of-key-files)
+- [🛠️ Technologies Used](#️-technologies-used)
+- [🔌 API Endpoints (Routes)](#-api-endpoints-routes)
+   * [V1 — Legacy endpoints](#v1--legacy-endpoints)
+   * [**1. System Status**](#1-system-status)
+   * [**2. Get Day Rates (BCV / Binance)**](#2-get-day-rates-bcv--binance)
+   * [**3. Get Chronological Rate History (V1)**](#3-get-chronological-rate-history-v1)
+   * [**4. Calculate Payment Convenience**](#4-calculate-payment-convenience)
+   * [**5. Scheduler Diagnostics**](#5-scheduler-diagnostics)
+   * [V2 — Modern endpoints](#v2--modern-endpoints)
+   * [**6. Rates by Asset Type**](#6-rates-by-asset-type--get-apiv2ratesasset)
+   * [**7. Paginated History with Date Filter** — `GET /api/v3/rates/history/{category}`](#7-paginated-history-with-date-filter--get-apiv3rateshistorycategory)
+- [🔒 Security and Middleware](#-security-and-middleware)
+- [💻 Local Configuration](#-local-configuration)
+   * [Traditional Method (Virtual Environment)](#traditional-method-virtual-environment)
+   * [Docker Method (Recommended)](#docker-method-recommended)
+- [📊 Architecture Diagrams](#-architecture-diagrams)
+   * [Data State Diagram](#data-state-diagram)
+   * [Data Flow Diagram (User Interaction)](#data-flow-diagram-user-interaction)
+   * [Redis Data Model Diagram](#redis-data-model-diagram)
+- [🤖 CI/CD (GitHub Actions)](#-cicd-github-actions)
+- [Production Deployment Guide (Render + Upstash + Neon)](#production-deployment-guide-render--upstash--neon)
+- [⚖️ Disclaimer](#️-disclaimer)
+- [❓ FAQ: Technical Project Decisions](#-faq-technical-project-decisions)
 
 <!-- TOC end -->
 
-<!-- TOC --><a name="and-a-table-of-contents"></a>
-## And a table of contents
-
-will be generated
-
-<!-- TOC --><a name="on-the-right"></a>
-## On   the right
-<!-- TOC --><a name="ahorrave"></a>
-# AHORRAVE
-<!-- TOC start (generated with https://github.com/derlin/bitdowntoc) -->
-
-- [**API** Exchange Convenience Calculator (**VES**/**USD**/**EUR**)](#api-calculadora-de-conveniencia-cambiaria-vesusdeur)
-- [🏗️ System Architecture](#-arquitectura-del-sistema)
-- [📁 Folder structure ](#-estructura-de-carpetas)
-   * [Quick Overview:](#descripción-rápida)
-   * [Structure considerations](#consideraciones-acerca-de-la-estructura)
-- [🛠️ Technologies Used](#-tecnologías-utilizadas)
-- [🔌 API Endpoints (Routes)](#-endpoints-de-la-api-rutas)
-   * [**1. Get BCV Day Rates**](#1-obtener-tasas-del-día-bcv)
-   * [**2. Get Binance Daily Rates**](#2-obtener-tasas-del-día-binance)
-   * [2. Calculate Convenience](#2-calcular-conveniencia)
-   * [What would this look like in practice?](#cómo-se-vería-esto-en-la-práctica)
-      + [Case 1: Compare cash vs. transfer (Rate of the day)](#caso-1-comparar-efectivo-vs-transferencia-tasa-del-día)
-      + [Case 2: The trade has "phantom" prices at the BCV rate](#caso-2-el-comercio-tiene-precios-fantasma-a-tasa-bcv)
-      + [Case 3: You want to see if the store rate beats the black market (Binance)](#caso-3-quieres-ver-si-la-tasa-de-la-tienda-le-gana-al-mercado-negro-binance)
-- [Development Plan (2 Week Schedule)](#plan-de-desarrollo-cronograma-de-2-semanas)
-      + [Week 1: Extraction and Core Logic (Pure Backend) ](#semana-1-extracción-y-lógica-central-backend-puro)
-      + [Week 2: **API**, Deployment and Testing ](#semana-2-api-despliegue-y-pruebas)
-   * [Clone the repository:](#clonar-el-repositorio)
-   * [Create and initialize the Virtual Environment: ](#crear-e-inicializar-el-entorno-virtual)
-   * [Install dependencies: ](#instalar-dependencias)
-   * [Run the API in development mode: ](#correr-la-api-en-modo-desarrollo)
-   * [Build and run the container: ](#construir-y-ejecutar-el-contenedor)
-   * [Stop containers:](#detener-los-contenedores)
-   * [Test the **API** AND DIAGRAMS](#probar-la-api-y-diagramas)
-   * [Data State Diagram](#diagrama-de-estado-de-datos)
-   * [Data flow diagram](#diagrama-de-flujo-de-datos)
-   * [Data Model Diagram (Redis)](#diagrama-de-modelo-de-datos-redis)
-   * [Normalization Decision Diagram](#diagrama-de-decisión-de-normalización)
-- [❓ FAQ: Technical Project Decisions](#-faq-decisiones-técnicas-del-proyecto)
-   * [1. Why FastAPI and not another framework like Flask or Django?](#1-por-qué-fastapi-y-no-otro-framework-como-flask-o-django)
-   * [2. Why do we need Redis? Isn't a normal database enough?](#2-por-qué-necesitamos-redis-no-basta-con-una-base-de-datos-normal)
-   * [3. Why do we include "Background Tasks"?](#3-por-qué-incluimos-tareas-en-segundo-plano-background-tasks)
-   * [4. Is this level of complexity really necessary for something so "small"?](#4-es-realmente-necesario-este-nivel-de-complejidad-para-algo-tan-pequeño)
-   * [5. How do scrapers work?](#5-cómo-funcionan-los-scrapers)
-
-
-<!-- TOC end -->
 <!-- TOC --><a name="api-exchange-convenience-calculator-vesusdeur"></a>
 ## **API** Exchange Convenience Calculator (**VES**/**USD**/**EUR**)
 
-This project consists of an automated, high-speed **API** **REST** designed to calculate in real time which payment method (cash foreign exchange or bolivars at the official/parallel rate) is most convenient when making a purchase in Venezuela.
+This project is an automated, asynchronous, high-speed **REST API** designed to calculate in real time which payment method (cash foreign currency, euros, or bolivars at the official/parallel rate) is most convenient when making a purchase in Venezuela.
 
-The objective is to solve an everyday problem: the loss of money due to poorly calculated rounding or exchange gaps between businesses and official rates.
+The goal is to solve an everyday problem: money lost to poorly calculated rounding or asymmetric exchange-rate gaps between businesses and current market rates.
 
-<!-- TOC --><a name="-system-architecture"></a>
+---
+
+<!-- TOC --><a name="️-system-architecture"></a>
 ## 🏗️ System Architecture
 
-To support high user traffic without overwhelming the servers or being blocked by the originating pages, the backend does not consult the BCV or Binance in each calculation. Instead, use a **Cache** pattern:
+To support massive concurrent traffic in production without saturating external providers, avoiding network blocks and guaranteeing high availability, the backend does not query the source portals on every client request. Instead, it implements a decoupled, fault-tolerant ecosystem:
 
-1. **The Scraper (Scraper/API Worker):** An asynchronous script runs in the background every few hours. Visit the BCV page, extract the Dollar and Euro rates, and consult the Binance API.
-2. **Fast Memory (Redis Cache):** The collector saves the day's rates in an in-memory database (Redis). Reading from here takes less than 2 milliseconds.
-3. **The Engine (FastAPI):** When a user enters amounts into the calculator, FastAPI takes the rates saved in Redis, performs the math instantly and returns the purchase recommendation.
+<!-- TOC --><a name="1-resilient-extraction-infrastructure-scrapers"></a>
+### 1. Resilient Extraction Infrastructure (Scrapers)
+Designed with the **Template Method Pattern** via the abstract class `BaseRateWorker`. It centralizes the execution flow, structural control of data schemas, ISO timestamp injection and persistence in an agnostic way.
+* **`BinanceWorker` with Camouflage Enhancements:** Rotating **User-Agents** and random **dynamic Jitter** delays (1 to 8 seconds) before each request to mitigate automated IP tracking.
+* **Failover Mechanism (Plan B):** On any critical anomaly in the Binance pipeline (timeouts, empty data payloads from bans, non-error but restrictive HTTP codes), the scraper activates a transparent bypass to the **Yadio.io** API as a high-availability contingency provider.
+* **`YadioRateWorker` (COP / ARS):** Generic worker parameterized by fiat currency (`app/scrapers.py:209`). Queries `https://api.yadio.io/exchanges/{fiat}` every 15 minutes. Instantiated as `YadioRateWorker(fiat="COP", redis_key="rates:cop")` and `YadioRateWorker(fiat="ARS", redis_key="rates:ars")`.
+* **`FrankfurterWorker` (COP / ARS):** Direct fiat/VES rate source via `https://api.frankfurter.dev/v2/rate/{fiat}/VES`, used by the COP and ARS jobs.
 
-<!-- TOC --><a name="-folder-structure"></a>
-## 📁 Folder structure 
+<!-- TOC --><a name="2-persistence-and-advanced-cache-layer-upstash-redis--neon-postgres"></a>
+### 2. Persistence and Advanced Cache Layer (Upstash Redis + Neon Postgres)
+All collected information lands on **two parallel, independent destinations**: Redis managed by Upstash (hot cache) and serverless Postgres from Neon (durable history). Dual data scheme:
+* **Current State (`String`):** Stores a serialized JSON object under keys `rates:bcv`, `rates:binance`, `rates:cop` and `rates:ars` for immediate reads (< 2ms) by the calculator and rate endpoints.
+* **Audit/History Log (`ZSET` / Sorted Set):** Chronological sequences under `history:rates:bcv`, `history:rates:binance`, `history:rates:cop` and `history:rates:ars`. The sort *score* is the event's Unix timestamp. **Legacy:** still written during the transition, but reads no longer go through it.
+* **Durable History (`Postgres` / Neon):** Table `rate_history` (`category`, `source`, `last_updated` as Unix timestamp, `rates` JSONB) indexed on `(category, last_updated DESC)`. The v3 history endpoint reads exclusively from here.
+* **Keep-Alive Strategy:** A dedicated scheduled task pings Upstash every 5 minutes, preventing connection degradation and neutralizing cold-start latency in Serverless/free services.
 
-To maintain order, scalability and clarity, the files are structured as follows:
+**Dual-write flow:** the worker scrapes once and writes **in parallel** to Upstash and Neon:
 
-```text
-ahorrave-backend/
-├── app/
-│   ├── __init__.py
-│   ├── main.py              # Punto de entrada de la API
-│   ├── schemas.py           # Modelos de Pydantic (validación de JSON)
-│   ├── services.py          # Lógica de negocio (normalización y cálculos)
-│   ├── database.py          # Conexión con Upstash Redis
-│   ├── scrapers.py          # Workers (lógica de BCV y Binance)
-│   └── utils.py             # Funciones auxiliares (fechas, helpers)
-├── tests/                   # Pruebas unitarias para la lógica de cálculo
-├── .env                     # Variables de entorno (Redis URL, Tokens)
-├── docker-compose.yml       # Orquestación de contenedores
-├── Dockerfile               # Configuración del entorno Python
-├── requirements.txt         # Dependencias
-└── README.md                # Documentación del proyecto
-
+```mermaid
+graph LR
+    W[Worker scrapes<br/>app/scrapers.py] --> R[(Upstash Redis<br/>rates:* + history ZSET legacy)]
+    W --> P[(Neon Postgres<br/>rate_history durable)]
 ```
 
----
+**Upstash does NOT feed Neon** — they are parallel targets, not a pipeline. Each survives the other's failure. Only exception: `scripts/backfill.py` (manual one-shot that migrates the ZSET history accumulated before the migration).
 
-<!-- TOC --><a name="quick-overview"></a>
-### Quick Overview:
-
-* **`app/main.py`**: This is where we define the routes (`/api/v1/rates/bcv`, `/api/v1/rates/binance` and `/api/v1/calcular`). It just delegates the work to the other files.
-* **`app/schemas.py`**: It is the "contract" of the API. Here we define the JSONs that we saw before (`CalculationRequest`, `CalculationResponse`). If the data does not come as we expect, FastAPI will fail here before reaching the logic.
-* **`app/services.py`**: Here resides the **normalization decision diagram**. It's where the magic happens: you receive the data from the schema, query Redis, normalize to `VES` and you compare.
-* **`app/scrapers.py`**: It will have two main functions (e.g.: `update_bcv_rates` and `update_binance_rates`). Each one will be an asynchronous task that the system will call according to its own frequency.
-* **`app/database.py`**: Connection management with `redis-py`. Keeps connection code clean and reusable.
-
-<!-- TOC --><a name="structure-considerations"></a>
-### Structure considerations
-
-1. **Scalability:** If tomorrow you want to add a third scraper (for example, for the Euro or rates from another website), you just create the function in `scrapers.py` and add a route in `main.py`.
-2. **Maintainability:** If there is a mathematical error in the calculation, you know it is in `services.py`. If the data is getting bad, you know it's in `scrapers.py`.
-3. **Testing:** By separating the logic (`services.py`) from the web (`main.py`), you can do unit testing without having to build a web server.
-
+<!-- TOC --><a name="3-background-lifecycle-and-orchestration-fastapi-lifespan"></a>
+### 3. Background Lifecycle and Orchestration (FastAPI Lifespan)
+Background task automation is managed with **APScheduler** (`AsyncIOScheduler`), fully coupled to FastAPI's `lifespan` context manager.
+* **Cache Hydration on Startup:** During early initialization (before receiving HTTP traffic), the API forces an initial synchronous run of all workers. This ensures production never answers with null/empty data on cold start.
+* **Task Tolerance Policies:** Critical background routines use `misfire_grace_time=30` so server CPU timing skew does not discard scheduled runs or flood logs with warnings.
 
 ---
 
-<!-- TOC --><a name="-technologies-used"></a>
+<!-- TOC --><a name="-folder-structure"></a>
+## 📁 Folder Structure
+
+```text
+cambialy-backend/
+├── app/
+│   ├── __init__.py
+│   ├── main.py              # API entry point and FastAPI Lifespan
+│   ├── schemas.py           # Pydantic models (strict structural validation)
+│   ├── services.py          # Business logic and contingency API integration
+│   ├── database.py          # Upstash Redis connection + async Postgres engine
+│   ├── models.py            # SQLAlchemy ORM (RateHistory)
+│   ├── scrapers.py          # Abstract worker infrastructure (BCV / Binance / Yadio / Frankfurter)
+│   ├── scheduler.py         # APScheduler job configuration
+│   └── utils.py             # Helper functions and formatters
+├── scripts/
+│   └── backfill.py          # One-shot: Redis ZSET history → Postgres migration
+├── tests/                   # Unit test suite (37 tests)
+├── .github/workflows/ci.yml # CI: pytest + docker build on push/PR
+├── .env                     # Secure environment variable configuration
+├── docker-compose.yml       # Container infrastructure orchestration
+├── Dockerfile               # Optimized Python environment packaging
+├── requirements.txt         # Dependency tree
+├── README.md                # Project documentation
+└── readme-EN.md             # English documentation
+```
+
+<!-- TOC --><a name="quick-overview-of-key-files"></a>
+### Quick overview of key files:
+
+* **`app/main.py`**: Orchestrates the app lifecycle (`lifespan`), exposes interactive docs at `/docs`, globally catches exceptions and defines the public routes (v1/v2/v3).
+* **`app/scrapers.py`**: Modularized web extraction logic. Implements inheritance and async threads to isolate HTML parsing (BeautifulSoup4) and safe JSON queries (HTTPX).
+* **`app/scheduler.py`**: Centralizes automatic interval configuration:
+* `job_ping_redis`: Strict 5-minute interval.
+* `job_binance_scraper`: 15-minute interval.
+* `job_bcv_scraper`: Parametrized `cron` expression Monday-Friday, 11:00-18:00, at minutes 0 and 30 of each hour.
+* `job_cop_scraper`: 15-minute interval — Colombian Peso worker.
+* `job_ars_scraper`: 15-minute interval — Argentine Peso worker.
+* **`app/database.py`**: Upstash Redis connection (`redis-py` with SSL) plus async SQLAlchemy engine/session for Postgres (`AsyncSessionLocal`), with `MockRedis` fallback for local development.
+* **`app/models.py`**: `RateHistory` ORM model — `category`, `source`, `last_updated` (Unix float), `rates` (JSONB on Postgres / JSON on SQLite).
+* **`app/utils.py`**: Helpers — `datetime_to_unix()` converts ISO8601 datetimes to Unix timestamps.
+* **`app/schemas.py`**: Pydantic models — `CalculationRequest`, `CalculationResponse` and `RateResponseDTO` (standardized rate response DTO: `source`, `target_currency`, `rate_value`, `last_updated`).
+* **`tests/`**: 37 unit tests (`test_main.py`, `test_frankfurter_worker.py`, `test_rate_limit.py`, `test_services.py`, ...). History tests run against SQLite in-memory simulating Postgres; Redis is mocked.
+
+---
+
+<!-- TOC --><a name="️-technologies-used"></a>
 ## 🛠️ Technologies Used
 
-* **Language:** Python 3.10+
-* **Web Framework:** `FastAPI` (Asynchronous, ultra-fast and generates automatic documentation).
-* **Data Extraction:** `HTTPX` (asynchronous HTTP requests) and `BeautifulSoup4` (Web Scraping for the BCV).
-* **Cache and Database:** `Redis` (Ultra-fast temporary cloud storage via Upstash).
-* **Production Server:** `Uvicorn`.
-* **Containers**: `Docker` and `Docker Compose` (To package and run the application in any environment in a standardized way).
+* **Base Framework:** `FastAPI` 0.100+ (async, ASGI-based, OpenAPI/Swagger autogeneration).
+* **Task Management:** `APScheduler` (Advanced Python Scheduler).
+* **HTTP Client:** `HTTPX` (native async concurrency).
+* **HTML Processing:** `BeautifulSoup4` + `lxml`.
+* **Cache Engine:** `Redis` (direct SSL connectors to Upstash).
+* **Durable Storage:** `PostgreSQL` via Neon (serverless) + `SQLAlchemy` 2.0 async + `psycopg`.
+* **DevOps Ecosystem:** `Docker` & `Docker Compose` for container standardization, `GitHub Actions` for CI.
 
+---
 
 <!-- TOC --><a name="-api-endpoints-routes"></a>
 ## 🔌 API Endpoints (Routes)
-The API will mainly expose two routes that the Frontend or Mobile App will consume:
 
-<!-- TOC --><a name="1-get-bcv-day-rates"></a>
-### **1. Get BCV Day Rates**
+### V1 — Legacy endpoints
 
-Route: `GET /api/v1/rates/bcv`
+<!-- TOC --><a name="1-system-status"></a>
+#### **1. System Status**
 
-**Description**: Returns the official rates (USD/EUR) of the Central Bank of Venezuela.
+* **Route:** `GET /`
+* **Description:** Welcome endpoint and immediate visual check. Returns quick links to the docs.
+* **Route:** `GET /health`
+* **Description:** Health check for cloud orchestrators (Render/Railway/AWS). Confirms service operational health.
 
-**Purpose**: Returns the official rates (USD/EUR) of the Central Bank of Venezuela.
+<!-- TOC --><a name="2-get-day-rates-bcv--binance"></a>
+#### **2. Get Day Rates (BCV / Binance)**
 
-**Frequency**: Update via scheduled task (cron) from 11:00 AM to 6:00 PM.
+* **Routes:** `GET /api/v1/rates/bcv` | `GET /api/v1/rates/binance`
+* **Description:** Retrieves current structured rates in milliseconds directly from Redis RAM.
+* **Sample response (Binance JSON):**
 
-**Storage**: key `rates: bcv` in Redis.
-
-Request result (**JSON**): 
-
-```JSON
+```json
 {
-  "source": "BCV",
-  "last_updated": "2026-05-29T15:30:00Z",
-  "rates": {
-    "USD": 41.50,
-    "EUR": 44.82
-  }
-}
-```
-<!-- TOC --><a name="2-get-binance-daily-rates"></a>
-### **2. Get Binance Daily Rates**
-
-Route: `GET /api/v1/rates/bcv`
-
-**Description**: Returns Binance P2P rate
-
-**Purpose**: Constant update every 10-15 minutes due to high volatility.
-
-**Frequency**: Update via scheduled task (cron) from 11:00 AM to 6:00 PM.
-
-**Storage**: key `rates: binance` in Redis.
-
-Request result (**JSON**): 
-
-```JSON
-{
-  "source": "Binance P2P",
-  "last_updated": "2026-05-29T15:35:00Z",
+  "source": "Binance",
+  "last_updated": "2026-06-09T13:35:00.123456Z",
   "rates": {
     "USD": 45.20
   }
 }
 ```
 
-<!-- TOC --><a name="2-calculate-convenience"></a>
-### 2. Calculate Convenience
+<!-- TOC --><a name="3-get-chronological-rate-history-v1"></a>
+#### **3. Get Chronological Rate History (V1)**
 
-Route: `POST /api/v1/calcular`
+* **Route:** `GET /api/v1/rates/history/{category}`
+* **Query parameters:**
+* `category` (Path): `bcv` or `binance` (required).
+* `limit` (Query): Integer between 1 and 100. Controls response size (default: 20).
+* **Description:** Reads the legacy Redis ZSET to recover the last N analytical snapshots, ordered newest to oldest.
 
-**Description**: Receive product prices in the store and calculate which option is best.
+<!-- TOC --><a name="4-calculate-payment-convenience"></a>
+#### **4. Calculate Payment Convenience**
 
-Here is an example where we compare a price in dollars against a "BCV Rate Price" (which is usually an amount that the business invents using the official rate).
+* **Route:** `POST /api/v1/calcular`
+* **Description:** Receives two store payment options, evaluates input currencies (`USD`, `VES`, `EUR`, `COP`, `ARS`), injects the stored rate of the preferred source and computes the economically optimal option and real savings.
+* **Request body (`CalculationRequest`):**
 
-Request Body (**JSON**):
-
-```JSON
+```json
 {
   "price_a": 20.00,
   "type_a": "USD",
-  "price_b": 25.00,
-  "type_b": "BCV_RATE",
-  "target_currency": "USD",
-  "preferred_source": "BINANCE"
-}
-```
-
-<!-- TOC --><a name="what-would-this-look-like-in-practice"></a>
-### What would this look like in practice?
-
-Imagine that you are faced with two totally different situations on the same day:
-
-<!-- TOC --><a name="case-1-compare-cash-vs-transfer-rate-of-the-day"></a>
-#### Case 1: Compare cash vs. transfer (Rate of the day)
-If you have dollars in cash and want to know if it is better for you to pay in bolivars by transfer:
-
-```JSON
-{
-  "price_a": 50.00,
-  "type_a": "USD",
-  "price_b": 2100.00,
+  "price_b": 920.00,
   "type_b": "VES",
-  "preferred_source": "BCV"
+  "target_currency": "USD",
+  "preferred_source": "binance"
 }
 ```
 
-<!-- TOC --><a name="case-2-the-trade-has-phantom-prices-at-the-bcv-rate"></a>
-#### Case 2: The trade has "phantom" prices at the BCV rate
+<!-- TOC --><a name="5-scheduler-diagnostics"></a>
+#### **5. Scheduler Diagnostics**
 
-If the store tells you: "In dollars it is $20, but if you pay in bolivars I will calculate it at the BCV rate":
+* **Route:** `GET /debug/scheduler`
+* **Description:** Secure internal endpoint to audit the async scheduler state, showing active task IDs, function references and the exact next scheduled execution time.
 
-```JSON
+---
+
+### V2 — Modern endpoints
+
+All V2 endpoints return standardized responses via `RateResponseDTO` (`{source, target_currency, rate_value, last_updated}`). Mounted under `/api/v2/rates/`.
+
+<!-- TOC --><a name="6-rates-by-asset-type--get-apiv2ratesasset"></a>
+#### **6. Rates by Asset Type** — `GET /api/v2/rates/{asset}`
+
+| Asset | Route | Source | Redis key |
+|---|---|---|---|
+| USD | `/api/v2/rates/usd` | BCV | `rates:bcv` |
+| EUR | `/api/v2/rates/eur` | BCV | `rates:bcv` |
+| USDT | `/api/v2/rates/usdt` | Binance P2P | `rates:binance` |
+| COP | `/api/v2/rates/cop` | Yadio/Frankfurter | `rates:cop` |
+| ARS | `/api/v2/rates/ars` | Yadio/Frankfurter | `rates:ars` |
+
+**Query parameters:**
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `date` | `datetime` (ISO8601) | No | Historical query date/time. Ex: `2026-06-15T14:30:00Z` |
+
+* **Without `?date=`:** Returns `RateResponseDTO` with the most recent rate.
+* **With `?date=`:** Searches the history for the record with timestamp closest `<=` to the given one and returns:
+
+```json
 {
-  "price_a": 20.00,
-  "type_a": "USD",
-  "price_b": 20.00,
-  "type_b": "BCV_RATE",
-  "preferred_source": "BCV"
+  "currency": "USDT",
+  "rate": 46.50,
+  "timestamp": "2026-06-15T14:30:00Z"
 }
 ```
 
-<!-- TOC --><a name="case-3-you-want-to-see-if-the-store-rate-beats-the-black-market-binance"></a>
-#### Case 3: You want to see if the store rate beats the black market (Binance)
-If the business offers you a price in bolivars that seems "cheap" and you want to see if you really beat the P2P market:
+<!-- TOC --><a name="7-paginated-history-with-date-filter--get-apiv3rateshistorycategory"></a>
+#### **7. Paginated History with Date Filter** — `GET /api/v3/rates/history/{category}`
 
-```JSON
+**Route parameters:**
+
+| Parameter | Type | Values |
+|---|---|---|
+| `category` | `string` (path) | `bcv`, `binance`, `cop`, `ars` |
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `page` | `int` | 1 | Page number (starts at 1) |
+| `size` | `int` | 50 | Records per page (max 100) |
+| `cursor` | `string` | `null` | Pagination cursor (ISO8601 or Unix timestamp) for infinite scroll |
+| `date` | `date` (YYYY-MM-DD) | `null` | Single date → **ALL** rates of that full day. Mutually exclusive with `start_date`/`end_date`. Ex: `2026-06-01` |
+| `start_date` | `date` (YYYY-MM-DD) | `null` | Range start. Alone → **ALL** rates of that full day. Ex: `2026-06-01` |
+| `end_date` | `date` (YYYY-MM-DD) | `null` | Range end. With `start_date` forms an inclusive range of full days. Ex: `2026-06-03` |
+
+**Response:**
+
+```json
 {
-  "price_a": 1000.00,
-  "type_a": "VES",
-  "price_b": 25.00,
-  "type_b": "USD",
-  "preferred_source": "BINANCE"
-}
-```
-Finally, the
-The response that the API will return (**JSON**) will be something like:
-
-```JSON
-{
-  "request_summary": {
-    "option_a": {"price": 20.00, "type": "USD"},
-    "option_b": {"price": 25.00, "type": "BCV_RATE"},
-    "source_used": "BCV",
-    "target_currency": "USD"
-  },
-  "calculation_details": {
-    "option_a_in_ves": 830.00,
-    "option_b_in_ves": 1037.50,
-    "exchange_rate_applied": 41.50
-  },
-  "recommendation": {
-    "best_option": "OPTION_A",
-    "savings_amount": 5.00,
-    "savings_currency": "USD",
-    "message": "Pagar en USD (a tasa de mercado) es más conveniente. Estás ahorrando 5.00 USD frente al precio fijado a tasa oficial del comercio."
-  }
+  "category": "binance",
+  "page": 1,
+  "size": 50,
+  "total_records": 1200,
+  "history": [
+    {
+      "source": "Binance",
+      "last_updated": "2026-06-15T14:30:00.123456Z",
+      "rates": { "USD": 46.50 }
+    }
+  ]
 }
 ```
 
-<!-- TOC --><a name="development-plan-2-week-schedule"></a>
-## Development Plan (2 Week Schedule)
+**Date filter behavior:**
+* History is read from **Postgres (Neon)** — table `rate_history` (`category`, `source`, `last_updated` Unix, `rates` JSONB), index `(category, last_updated DESC)`. Redis serves only the current rate.
+* No date params → total count with `COUNT`, pagination with `ORDER BY last_updated DESC + OFFSET/LIMIT`.
+* `date` or `start_date` alone → **full day**: `00:00:00` to `23:59:59` (`WHERE last_updated BETWEEN`). Ex: `?date=2026-06-01` or `?start_date=2026-06-01` returns ALL rates of June 1st regardless of hour.
+* `start_date` + `end_date` → **inclusive** full-day range: `start_date` from `00:00:00` and `end_date` until `23:59:59`. Ex: `?start_date=2026-06-01&end_date=2026-06-03` returns rates of June 1, 2 and 3.
+* `date` mixed with `start_date`/`end_date` → `400 Bad Request`.
+* `end_date < start_date` → `400 Bad Request`.
+* Invalid format → `422 Unprocessable Entity`. Full ISO8601 is tolerated (`2026-06-01T00:00:00Z` truncates to `2026-06-01`).
+* No data in range → empty `history`, `total_records: 0`.
+* `DATABASE_URL` not configured → `503 Service Unavailable`.
 
-<!-- TOC --><a name="week-1-extraction-and-core-logic-pure-backend"></a>
-#### Week 1: Extraction and Core Logic (Pure Backend) 
+> `/api/v2/rates/history/{category}` remains as a **deprecated alias** (same logic, marked deprecated in Swagger) for backwards compatibility.
 
-* Day 1-2: Setting up Python environment, installing dependencies, Git repositories and Docker files. 
- * Day 3-4: Development of app/scrapers.py. Create asynchronous functions to extract rates from **BCV** and Binance. 
- * Day 5-7: Connection with Upstash Redis. Save the data and structure the logic in services.py.
+---
 
-<!-- TOC --><a name="week-2-api-deployment-and-testing"></a>
-####  Week 2: **API**, Deployment and Testing 
+<!-- TOC --><a name="-security-and-middleware"></a>
+## 🔒 Security and Middleware
 
-* Day 8-10: Creation of the endpoints in app/main.py. Test requests from Swagger (/docs). 
-* Day 11-12: Setting up background tasks to keep Redis updated automatically. 
-* Day 13-14: Construction of the final Docker image and deployment to production (Render, Koyeb or **VPS**). Load tests.
+| Component | Description |
+|---|---|
+| **CORS** | Configurable origins via `ALLOWED_ORIGINS` (env). Defaults to `localhost:5173` in development, restrictive in production. |
+| **Rate Limiting** | slowapi — 10 requests/minute per IP. Exceeding → `429 Too Many Requests`. |
+| **HTTP Security** | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Strict-Transport-Security: max-age=31536000` |
+| **Error Handling** | Uncaught exceptions → generic `500`. HTTP errors → `{error: "safe message"}` without leaking internal details. |
+| **Authentication** | `/debug/scheduler` protected with HTTP Basic Auth (`ADMIN_USERNAME` / `ADMIN_PASSWORD`). |
 
-Local Configuration (Traditional Method)
+---
 
-<!-- TOC --><a name="clone-the-repository"></a>
-### Clone the repository:
+<!-- TOC --><a name="-local-configuration"></a>
+## 💻 Local Configuration
 
-git clone https://github.com/watchtheblind/ahorrave-backend.git cd saveve-backend
-<!-- TOC --><a name="create-and-initialize-the-virtual-environment"></a>
-### Create and initialize the Virtual Environment: 
-```shell 
-python -m venv venv 
+<!-- TOC --><a name="traditional-method-virtual-environment"></a>
+### Traditional Method (Virtual Environment)
+
+1. **Clone the repository:**
+```shell
+git clone https://github.com/your-org/cambialy-backend.git
+cd cambialy-backend
 ```
 
-On Windows: ```.\venv\Scripts\activate ```
-
-On Linux/Mac: ```source venv/bin/activate ```
-
-<!-- TOC --><a name="install-dependencies"></a>
-### Install dependencies: 
-```shell 
-pip install -r requirements.txt 
+2. **Initialize Virtual Environment and Install Dependencies:**
+```shell
+python -m venv venv
+# Activate on Windows: .\venv\Scripts\activate | On Linux: source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-<!-- TOC --><a name="run-the-api-in-development-mode"></a>
-### Run the API in development mode: 
-```shell 
+3. **Run in Development Mode (Live Reload):**
+```shell
 uvicorn app.main:app --reload
 ```
 
-Local Configuration (Using Docker)
+<!-- TOC --><a name="docker-method-recommended"></a>
+### Docker Method (Recommended)
 
-Using Docker makes it easy to run the project identically on any computer, without the need to manually configure Python or virtual environments.
+Standardizes dependencies without requiring Python setup on the host:
 
-Requirements: Have Docker and Docker Desktop (or Docker Compose) installed.
-
-<!-- TOC --><a name="build-and-run-the-container"></a>
-### Build and run the container: 
-
-In the same folder where the docker-compose.yml file is located, run: 
-
-```shell 
+```shell
 docker-compose up --build
 ```
 
-This command will download the Python environment, install the dependencies, and run the **API**. If you want it to run in the background (freeing up your terminal), add the -d flag at the end: docker-compose up --build -d
+*To stop containers and clean up resources:* `docker-compose down`
 
-<!-- TOC --><a name="stop-containers"></a>
-### Stop containers:
+> **Local without external services:** with `APP_ENV=development` and no `DATABASE_URL`, the API uses `MockRedis` (in-memory) and history returns `503` — perfect for logic tests without touching Upstash/Neon.
 
-If you ran the normal command, press Ctrl + C in your terminal. If you ran it in the background, run: docker-compose down
+---
 
-<!-- TOC --><a name="test-the-api-and-diagrams"></a>
-### Test the **API** AND DIAGRAMS
-
-Regardless of whether you used the traditional or Docker method, once the server is running, open your web browser and visit: [http://**127**.0.0.1:**8000**/docs](https://[www.google.com/search?q=http://**127**.0.0.1:**8000**/docs](https://www.google.com/search?q=http://**127**.0.0.1:**8000**/docs))
-
-There you will find the Swagger graphical interface, where you can easily test all the routes and send test data to the calculator.
+<!-- TOC --><a name="-architecture-diagrams"></a>
+## 📊 Architecture Diagrams
 
 <!-- TOC --><a name="data-state-diagram"></a>
 ### Data State Diagram
 
-Shows how the data life cycle works
+Illustrates the continuous, independent lifecycle of rate data from external extraction to hot structuring:
 
-![DIAGRAM1](http://i.imgur.com/HYE9C3K.png)
+```mermaid
+graph TD
+    subgraph Scheduler [APScheduler - Background Tasks]
+        A[Interval / Cron Triggers] --> B(run_binance_worker)
+        A --> C(run_bcv_worker)
+        A --> D(run_cop_worker)
+        A --> E(run_ars_worker)
+    end
 
-<!-- TOC --><a name="data-flow-diagram"></a>
-### Data flow diagram
+    subgraph Scrapers [app/scrapers.py]
+        B --> F{BinanceWorker<br/>fetch_rate}
+        C --> G[BCVWorker<br/>fetch_rate]
+        D --> H[YadioRateWorker<br/>fiat=COP]
+        E --> I[YadioRateWorker<br/>fiat=ARS]
 
-Shows how the application reacts to user interactions
+        F -->|1. HTTP with Rotating User-Agent + Jitter| J{Request OK?}
+        J -->|Yes and Structurally Valid JSON| K[Extract P2P Price]
+        J -->|No or Empty/Blocked JSON| L[Active Fallback: fetch_yadio_rate]
 
-![DIAGRAM2](https://i.imgur.com/UNouMBN.png)
+        L -->|Gets Emergency Rate| K
+        G -->|BeautifulSoup4 HTML Parse| M[Extract Official USD/EUR Rates]
+        H -->|Yadio.io API Query| N[Extract COP/USD rate]
+        I -->|Yadio.io API Query| O[Extract ARS/USD rate]
+    end
 
-<!-- TOC --><a name="data-model-diagram-redis"></a>
-### Data Model Diagram (Redis)
+    subgraph BaseWorker [BaseRateWorker.run - Inherited Layer]
+        K --> P[Generate Unified Payload<br/>+ ISO Timestamp]
+        M --> P
+        N --> P
+        O --> P
+    end
 
-This diagram shows how we will organize information within Redis so that it is efficient and easy to query.
+    subgraph Storage [Dual-write Destinations]
+        P --> Q[(Upstash Redis<br/>rates:* + history ZSET legacy)]
+        P --> R[(Neon Postgres<br/>rate_history durable)]
+    end
 
-![DIAGRAM3](https://i.imgur.com/3dX3L6O.png)
+    style L fill:#ffcdd2,stroke:#b71c1c,stroke-width:2px
+    style Q fill:#e3f2fd,stroke:#0d47a1,stroke-width:1px
+    style R fill:#e8f5e9,stroke:#1b5e20,stroke-width:1px
+```
 
-<!-- TOC --><a name="normalization-decision-diagram"></a>
-### Normalization Decision Diagram
+<!-- TOC --><a name="data-flow-diagram-user-interaction"></a>
+### Data Flow Diagram (User Interaction)
 
-This is the "algorithm" that must be translated into code in the `services.py`. It is the golden rule for price normalization.
+Shows how the API reacts immediately, abstracting client requests from external load times:
 
-![DIAGRAM4](https://i.imgur.com/FTiyn5u.png)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Client / Frontend
+    participant API as FastAPI Backend (main.py)
+    participant Redis as Upstash Redis (Cache)
+    participant DB as Neon Postgres (History)
 
-<!-- TOC --><a name="production-deployment-guide-render-upstash"></a>
-##  Production Deployment Guide (Render + Upstash)
+    rect rgb(240, 248, 255)
+        note right of User: Scenario A: Current Rates
+        User->>API: GET /api/v1/rates/binance
+        API->>Redis: redis_client.get("rates:binance")
+        Redis-->>API: Cached JSON (< 2ms)
+        API-->>User: 200 OK - Immediate Rate Response
+    end
 
-This section documents the steps and decisions for implementing the API in the cloud for free.
+    rect rgb(255, 245, 238)
+        note right of User: Scenario B: Convenience Calculation
+        User->>API: POST /api/v1/calcular (Prices, Currencies, Source)
+        API->>Redis: Get last cached rate
+        Redis-->>API: Returns current rates JSON
+        API->>API: Run internal business logic (to_ves and comparison)
+        API-->>User: 200 OK - Optimal Option and Estimated Savings
+    end
 
-<!-- TOC --><a name="1-database-upstash-redis"></a>
-### 1. Database: Upstash Redis
-- Create a free account at [upstash.com](https://upstash.com).
-- Create a Redis database. The current free plan offers **500,000 commands per month** (enough for ~250,000 visits).
-- **Important**: In the database configuration, disable "Auto Upgrade" to avoid unexpected costs if the limit is exceeded.
+    rect rgb(240, 255, 240)
+        note right of User: Scenario C: Paginated History
+        User->>API: GET /api/v3/rates/history/bcv?start_date=2026-06-01
+        API->>DB: COUNT + SELECT rate_history WHERE last_updated BETWEEN
+        DB-->>API: Durable history rows
+        API-->>User: 200 OK - Paginated JSON with metadata
+    end
+```
 
-<!-- TOC --><a name="2-api-deployment-render"></a>
-### 2. API deployment: Render
-- The project is ready to be deployed in [render.com](https://render.com) using the `Dockerfile`.
-- **Free plan**: The web service goes to sleep after 15 minutes of no activity**. To keep it active 24/7, use an external service like [cron-job.org](https://cron-job.org) ping the URL `/health` every 10 minutes.
-- **Required environment variables** (configure in the Render panel):
-  | Variable | Value | Mandatory |
-  |----------|-------|-------------|
-  | `APP_ENV` | `production` | Yes |
-  | `UPSTASH_REDIS_REST_URL` | URL of your Upstash database | Yes |
-  | `UPSTASH_REDIS_REST_TOKEN` | Token of your Upstash database | Yes |
+<!-- TOC --><a name="redis-data-model-diagram"></a>
+### Redis Data Model Diagram
 
-<!-- TOC --><a name="3-solving-common-problems-in-production"></a>
-### 3. Solving common problems in production
+Shows key-value String structures coexisting with chronologically indexed Sorted Sets:
 
-<!-- TOC --><a name="mistake-cannot-import-name-redis-from-upstash_redis"></a>
-#### Mistake: `cannot import name 'Redis' from 'upstash_redis'`
-**Cause**: The bookstore `upstash-redis` changed your API and the import fails in some environments.
+```mermaid
+graph LR
+    subgraph Upstash_DB [Upstash Redis Database Instance]
 
-**Solution**: The `database.py` current uses the standard library `redis` (with `import redis`) and configure the SSL connection manually. This solution is more stable.
+        subgraph String_Structures [Current State - STRING]
+            K1["rates:binance"] -.-> V1["{<br/>'source': 'Binance',<br/>'last_updated': 'ISO-Timestamp',<br/>'rates': {'USD': float}<br/>}"]
+            K2["rates:bcv"] -.-> V2["{<br/>'source': 'BCV',<br/>'last_updated': 'ISO-Timestamp',<br/>'rates': {'USD': float, 'EUR': float}<br/>}"]
+            K5["rates:cop"] -.-> V5["{<br/>'source': 'Yadio',<br/>'last_updated': 'ISO-Timestamp',<br/>'rates': {'USD': float}<br/>}"]
+            K6["rates:ars"] -.-> V6["{<br/>'source': 'Yadio',<br/>'last_updated': 'ISO-Timestamp',<br/>'rates': {'USD': float}<br/>}"]
+        end
 
-<!-- TOC --><a name="mistake-error-upstash-usando-mockredis"></a>
-#### Mistake: `Error Upstash: usando MockRedis`
-**Cause**: Environment variables `APP_ENV=production`, `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are not configured or have incorrect values.
+        subgraph ZSET_Structures [Chronological History - ZSET]
+            K3["history:rates:binance"] -.-> H1["Score: 1782394800 (Unix Timestamp)<br/>Value: [JSON Payload String]"]
+            K3 -.-> H2["Score: 1782395700 (Unix Timestamp)<br/>Value: [JSON Payload String]"]
 
-**Solution**: Verify in the Render panel that the variables exist and are correct. After correcting them, do a "Manual Deploy" so that they are applied.
+            K4["history:rates:bcv"] -.-> H3["Score: 1782394800 (Unix Timestamp)<br/>Value: [JSON Payload String]"]
 
-<!-- TOC --><a name="4-local-development-without-upstash"></a>
-### 4. Local Development (without Upstash)
-For local development, **nothing needs to be configured**. Default, `APP_ENV=development` and the API will use `MockRedis` (in-memory cache). So any developer can clone and run `docker-compose up --build` without external dependencies.
+            K7["history:rates:cop"] -.-> H4["Score: 1782394800 (Unix Timestamp)<br/>Value: [JSON Payload String]"]
+            K8["history:rates:ars"] -.-> H5["Score: 1782394800 (Unix Timestamp)<br/>Value: [JSON Payload String]"]
+        end
 
-<!-- TOC --><a name="5-future-updates"></a>
-### 5. Future updates
-Every time changes are uploaded to the branch `main` on GitHub, Render automatically rebuilds and deploys the new version. No manual intervention required.
+    end
 
+    style String_Structures fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    style ZSET_Structures fill:#efebe9,stroke:#5d4037,stroke-width:2px
+```
+
+---
+
+<!-- TOC --><a name="-cicd-github-actions"></a>
+## 🤖 CI/CD (GitHub Actions)
+
+Workflow `.github/workflows/ci.yml` — runs on every push to `main`/`dev` and on every PR:
+
+| Job | What it does | Result |
+|---|---|---|
+| `tests` | `uv` + `pip install -r requirements.txt` + `pytest` (37 tests) | ✅/❌ |
+| `docker-build` | `docker build .` validates the Dockerfile compiles | ✅/❌ |
+
+No secrets required (tests run with `MockRedis` + in-memory SQLite). Check status in the repository's **Actions** tab. The scraping cron does NOT move to GitHub Actions (minute cost and per-run latency — see FAQ).
+
+---
+
+<!-- TOC --><a name="production-deployment-guide-render--upstash--neon"></a>
+## Production Deployment Guide (Render + Upstash + Neon)
+
+1. **Upstash Redis:** Register at [upstash.com](https://upstash.com), create a free Redis database. Make sure to disable "Auto Upgrade" to shield the free plan from automatic charges.
+2. **Neon Postgres:** Create a project at [neon.tech](https://neon.tech), copy the **pooled** connection string (`-pooler` host).
+3. **Render configuration:** Link the GitHub repository. Select deployment via the `Dockerfile`.
+4. **Key environment variables:**
+* `APP_ENV=production`
+* `UPSTASH_REDIS_REST_URL=your_redis_connection_url`
+* `UPSTASH_REDIS_REST_TOKEN=your_secret_auth_token`
+* `DATABASE_URL=your_neon_postgres_connection_string` (durable history — use the **pooled** Neon endpoint)
+
+5. **Create the history table** (one-time, via Neon SQL editor):
+
+```sql
+CREATE TABLE IF NOT EXISTS rate_history (
+  id BIGSERIAL PRIMARY KEY,
+  category TEXT NOT NULL,
+  source TEXT NOT NULL,
+  last_updated DOUBLE PRECISION NOT NULL,
+  rates JSONB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_cat_ts ON rate_history (category, last_updated DESC);
+```
+
+6. **Migrate existing history** (one-time, against the real Redis): `uv run python scripts/backfill.py`
+7. **Handling Suspension State (Cold Starts):** Render's free plan freezes the HTTP instance after 15 minutes of absolute inactivity. Link `/health` to an external availability monitor (like *cron-job.org*) pinging every 10 minutes.
+
+---
+
+<!-- TOC --><a name="️-disclaimer"></a>
+## ⚖️ Disclaimer
+
+The data, exchange rates and any information provided by this project and its API are **strictly informational** and obtained from third-party public sources (BCV, Binance, Yadio.io).
+
+**This project does NOT constitute financial advice, investment recommendation, nor does it guarantee the accuracy, completeness or timeliness of real-time data.** Use of the information is at the sole responsibility of the user.
+
+This project's maintenance is independent and is not affiliated with, endorsed by, or sponsored by any of the entities mentioned as data sources.
+
+---
 
 <!-- TOC --><a name="-faq-technical-project-decisions"></a>
 ## ❓ FAQ: Technical Project Decisions
 
-This document answers frequently asked questions about why we chose this technology stack for our currency calculator.
+<!-- TOC --><a name="1-why-is-a-background-scheme-used-if-this-is-a-calculator"></a>
+### 1. Why is a background scheme used if this is a calculator?
+Looking up exchange rates from portals like BCV or P2P platforms at the exact moment the user presses "Calculate" would cause a poor experience (high network latency, service outages if the source is down, and imminent risk of blocks from repetitive bot behavior). By decoupling scraping through automatic async tasks that feed an in-memory database (Redis), the calculator processes responses instantly (< 2ms), ensuring absolute resilience against external network anomalies.
 
----
+<!-- TOC --><a name="2-why-use-sorted-sets-zset-instead-of-a-relational-database-postgresql-for-history"></a>
+### 2. Why use Sorted Sets (ZSET) instead of a relational database (PostgreSQL) for history?
+For the original scope, a relational DB added unnecessary infrastructure overhead (concurrent connection management, migrations, disk latency). **Sorted Sets** natively order elements by numeric *score*. Using the Unix timestamp as score gives:
+* **O(log(N) + M) complexity** for inversely ordered range retrieval (`ZREVRANGEBYSCORE`), ideal for chart pagination.
+* **Automatic deduplication:** if a network skew runs the same process twice in the same second with the same payload, Redis does not duplicate the row — it updates the score, keeping the database clean.
 
-<!-- TOC --><a name="1-why-fastapi-and-not-another-framework-like-flask-or-django"></a>
-### 1. Why FastAPI and not another framework like Flask or Django?
-We chose **FastAPI** for three critical reasons for this project:
-* **Speed ​​and Concurrency:** FastAPI is asynchronous. This allows our API to handle hundreds of requests at a time without blocking, which is vital if the app goes viral.
-* **Automatic Documentation:** FastAPI gives us an interactive web page (in `/docs`) that serves as a technical manual. Anyone can see how the API works and test it without writing code.
-* **Data Validation:** By simply defining what we expect to receive, FastAPI automatically rejects any poorly formatted data, avoiding human errors in the database.
+> **Update:** History migrated to **Postgres (Neon)** — ZSETs are still written during the transition (dual-write), but the v3 endpoint reads from the `rate_history` table (durable, indexed, no RAM limit). Redis remains the current-rate cache. (`/api/v2/rates/history/` remains as a deprecated alias.)
 
-<!-- TOC --><a name="2-why-do-we-need-redis-isnt-a-normal-database-enough"></a>
-### 2. Why do we need Redis? Isn't a normal database enough?
-Using a traditional database (such as PostgreSQL or MySQL) would be too slow for this use case.
-* **Extreme Speed:** Redis saves data in RAM, not on the hard drive. The answer is in milliseconds.
-* **Smart Cache:** Since exchange rates do not change every second, we save the scraper result in Redis. Thus, the user always receives an instant response and we do not overload external websites (BCV/Binance).
-* **TTL (Time to Live):** Redis allows you to configure data to "self-destruct" or refresh after X amount of time, automating the updating of rates.
+<!-- TOC --><a name="3-what-happens-if-both-binance-and-the-contingency-service-yadio-fail-at-the-same-time"></a>
+### 3. What happens if both Binance and the contingency service (Yadio) fail at the same time?
+The system is designed under **graceful degradation**. If `BinanceWorker` fails, it switches to Yadio; if Yadio also suffers an extreme outage, the exception is caught and logged by the `BaseRateWorker` core without altering Redis state.
+* **Result:** The API keeps serving the last known valid rate (*Stale-While-Revalidate*) stored under `rates:binance`. The end user gets a successful response based on the last clean market snapshot, while the team receives alerts in the logs.
 
-<!-- TOC --><a name="3-why-do-we-include-background-tasks"></a>
-### 3. Why do we include "Background Tasks"?
-This is the "third pillar" of our architecture.
-* **User Independence:** When a user requests a calculation, we do not want their app to be "loading" while our API searches the BCV website. 
-* **Fluid Flow:** Background tasks allow our API to take care of updating rates (the "dirty work") regardless of whether the user is currently viewing something.
-* **Reliability:** If the BCV server is slow or goes down, our system does not fail; it just keeps serving the last rate saved in Redis.
+<!-- TOC --><a name="4-why-couple-the-scheduler-to-fastapi-lifespan-instead-of-an-independent-process-like-celery"></a>
+### 4. Why couple the Scheduler to FastAPI Lifespan instead of an independent process like Celery?
+For microservice platforms or monolithic containerized architectures (like Render's or Railway's economical plans), spawning a Celery worker, a queue manager (RabbitMQ/separate Redis) and a task monitor (Flower) triples costs and operational complexity.
+Integrating `APScheduler` directly into the `lifespan` `asynccontextmanager` lets background tasks share the same event loop as the FastAPI process. This optimizes container RAM usage and exposes direct telemetry (like `/debug/scheduler`).
 
-<!-- TOC --><a name="4-is-this-level-of-complexity-really-necessary-for-something-so-small"></a>
-### 4. Is this level of complexity really necessary for something so "small"?
-* **The short answer is: Yes.** * What seems like a "simple calculator" becomes a **performance** problem when 100 people ask at the same time. By structuring it this way from day 1, we guarantee that the app is stable, professional and scalable. Additionally, we are using tools that are industry standard, which makes our code very maintainable.
+<!-- TOC --><a name="5-how-is-data-poisoning-or-corrupt-payload-insertion-into-redis-mitigated"></a>
+### 5. How is data poisoning or corrupt payload insertion into Redis mitigated?
+Strict two-layer structural validation:
+1. **Scraping validation:** Before JSON serialization, workers verify the expected keys physically exist in the API responses (`data`, `adv`, `price`). If the structure mutates or a field is missing, the immediate `except` block fires instead of persisting corrupt or null data.
+2. **Output type validation:** `fetch_rate()` responses are forced to a strict contract of dictionaries with floats rounded to two decimals, guaranteeing absolute mathematical consistency for the calculator.
 
-<!-- TOC --><a name="5-how-do-scrapers-work"></a>
-### 5. How do scrapers work?
-Because prices are updated differently in terms of BCV and Binance rates, the logic is separated into these two processes for scrappers:
+<!-- TOC --><a name="6-why-is-last_updated-stored-as-a-unix-float-timestamp-instead-of-timestamptz"></a>
+### 6. Why is `last_updated` stored as a Unix float timestamp instead of `TIMESTAMPTZ`?
+Deliberate decision for 3 reasons:
 
-* #### BCV Worker:
+1. **Compatibility with the existing ZSET score:** Workers already stored `current_time.timestamp()` as the Sorted Set score (`app/scrapers.py`). Storing the column in the same format lets the **backfill** (`scripts/backfill.py`) migrate Redis data to Postgres **without conversion** — the score goes straight to `last_updated`. With `TIMESTAMPTZ`, every row would have required datetime conversion (timezone error risk).
 
-1. Configure it as a scheduled task (cron-like) that runs strictly from 11:00 AM to 6:00 PM.
+2. **Cross-database portability for tests:** Tests run against **SQLite in-memory** (`tests/conftest.py`) while production uses **Postgres**. `TIMESTAMPTZ` behaves differently in each (SQLite stores strings, Postgres tz-aware binary), making range comparisons engine-dependent. A **float compares numerically identically in any database**: `last_updated >= min AND <= max` is pure math.
 
-2. Store under a specific key in Redis (ex: rates:bcv).
+3. **Zero timezone ambiguity:** The Unix epoch is absolute UTC — no "UTC or local?" doubt at storage time. Timezone only matters at **presentation**, where the `_rate_history_to_payload` helper (`app/main.py`) converts the float to ISO-8601 with a `Z` suffix.
 
-* #### Binance Worker:
+**Trade-offs assumed:**
+* Less readability when inspecting the DB (`1780308000.0` instead of `2026-06-01 00:00:00`).
+* SQL queries with date functions require `to_timestamp(last_updated)` (natively supported by Postgres, so day/month aggregates remain possible).
 
-1. Set it with an interval of 10-15 minutes.
-
-2. Store under a separate key (ex: rates:binance).
-
-As Binance is an API, this worker will be much lighter and faster than the BCV worker.
-
+If heavy `date_trunc` SQL is ever needed, the column can be migrated to `TIMESTAMPTZ` with an `ALTER` + one-shot conversion.

@@ -1,16 +1,17 @@
 # app/database.py 
 import os
-import json
 import redis
 from dotenv import load_dotenv
-
+import logging
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 class MockRedis:
     def __init__(self):
         self._data = {}
         self._history = {}  # <-- Almacenará las listas para el simulador de historial
-        print("Usando MockRedis (sin conexión a Upstash)")
+        logger.info("Usando Redis Local (sin conexión a Upstash)")
     
     def get(self, key):
         return self._data.get(key)
@@ -52,39 +53,104 @@ class MockRedis:
         # Aplicamos el rebanado (slicing) posicional de Redis
         return just_values[start:end+1]
 
-# Ver si debemos usar Upstash
+    def zcard(self, key):
+        """Simula ZCARD: devuelve el número de elementos en un sorted set"""
+        if key not in self._history:
+            return 0
+        return len(self._history[key])
+
+    def zcount(self, key, min_score, max_score):
+        """Simula ZCOUNT: cuenta elementos con score en [min, max]"""
+        if key not in self._history:
+            return 0
+        return sum(1 for score, _ in self._history[key] if min_score <= score <= max_score)
+
+    def zrevrangebyscore(self, key, max_score, min_score, start=None, num=None):
+        """Simula ZREVRANGEBYSCORE: elementos en orden descendente filtrados por score"""
+        if key not in self._history:
+            return []
+        
+        exclusive_max = False
+        if isinstance(max_score, str) and max_score.startswith("("):
+            exclusive_max = True
+            max_val = float(max_score[1:])
+        else:
+            max_val = float(max_score)
+
+        exclusive_min = False
+        if isinstance(min_score, str) and min_score.startswith("("):
+            exclusive_min = True
+            min_val = float(min_score[1:])
+        else:
+            min_val = float(min_score)
+
+        filtered = []
+        for s, v in self._history[key]:
+            match_max = (s < max_val) if exclusive_max else (s <= max_val)
+            match_min = (s > min_val) if exclusive_min else (s >= min_val)
+            if match_max and match_min:
+                filtered.append((s, v))
+
+        filtered.sort(key=lambda x: x[0], reverse=True)
+        just_values = [v for s, v in filtered]
+
+        if start is not None and num is not None:
+            return just_values[start:start + num]
+        return just_values
+
+# ── Decidir qué Redis usar ──
 UPSTASH_URL = os.getenv("UPSTASH_REDIS_REST_URL", "")
 UPSTASH_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+REDIS_URL = os.getenv("REDIS_URL", "")
 APP_ENV = os.getenv("APP_ENV", "development")
 
-print(f"DEBUG: APP_ENV = '{APP_ENV}'")
-print(f"DEBUG: UPSTASH_URL = '{UPSTASH_URL[:40] if UPSTASH_URL else 'NO SET'}'...")
-print(f"DEBUG: UPSTASH_TOKEN = {'SET' if UPSTASH_TOKEN else 'NO SET'}")
-
-if APP_ENV == "production" and UPSTASH_URL and UPSTASH_TOKEN:
+logger.debug(f"APP_ENV = '{APP_ENV}'")
+logger.debug(f"REDIS_URL = {'SET' if REDIS_URL else 'NO SET'}")
+logger.debug(f"UPSTASH_URL = '{UPSTASH_URL[:40] if UPSTASH_URL else 'NO SET'}'...")
+logger.debug(f"UPSTASH_TOKEN = {'SET' if UPSTASH_TOKEN else 'NO SET'}")
+if REDIS_URL:
     try:
-        # Usar redis-py en lugar de upstash_redis (más estable)
-        import redis
-        
-        # Parsear la URL de Upstash (formato: https://xxxx.upstash.io)
-        # Extraer el host (quitar https:// y .upstash.io)
-        host = UPSTASH_URL.replace("https://", "").replace("http://", "")
-        
-        redis_client = redis.Redis(
-            host=host,
-            port=6379,
-            password=UPSTASH_TOKEN,
-            ssl=True,
-            decode_responses=True
-        )
-        # Probar conexión
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
         redis_client.ping()
-        print("Conectado a Upstash Redis (vía redis-py)")
+        logger.info("Conectado a Redis local")
     except Exception as e:
-        print(f"Error Upstash: {e}, usando MockRedis")
+        logger.error(f"Error REDIS_URL: {e}, usando MockRedis")
+        redis_client = MockRedis()
+elif APP_ENV == "production" and UPSTASH_URL and UPSTASH_TOKEN:
+    try:
+        host = UPSTASH_URL.replace("https://", "").replace("http://", "")
+        redis_client = redis.Redis(
+            host=host, port=6379, password=UPSTASH_TOKEN,
+            ssl=True, decode_responses=True
+        )
+        redis_client.ping()
+        logger.info("Conectado a Upstash Redis (vía redis-py)")
+    except Exception as e:
+        logger.error(f"ERROR - Error Upstash: {e}, usando MockRedis")
         redis_client = MockRedis()
 else:
-    print("Usando MockRedis (condición no cumplida)")
+    logger.warning("Usando MockRedis (sin conexión externa)")
     redis_client = MockRedis()
 
 redis_db = redis_client
+
+# ── Postgres (Neon) para el historial ──
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+AsyncSessionLocal = None
+if DATABASE_URL:
+    try:
+        db_url = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+        pg_engine = create_async_engine(
+            db_url,
+            pool_pre_ping=True,
+            pool_size=5,
+            max_overflow=5,
+        )
+        AsyncSessionLocal = async_sessionmaker(pg_engine, expire_on_commit=False, class_=AsyncSession)
+        logger.info("Conectado a Postgres (Neon)")
+    except Exception as e:
+        logger.error(f"Error configurando Postgres: {e}, historial deshabilitado")
+        AsyncSessionLocal = None
+else:
+    logger.warning("DATABASE_URL no configurado — historial Postgres deshabilitado")
