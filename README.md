@@ -355,7 +355,7 @@ docker-compose up --build
 <!-- TOC --><a name="diagrama-de-estado-de-datos"></a>
 ### Diagrama de Estado de Datos
 
-Ilustra el ciclo de vida continuo e independiente de los datos de las tasas desde su extracción externa hasta su estructuración en caliente en Redis:
+Ilustra el ciclo de vida continuo e independiente de los datos de las tasas desde su extracción externa hasta su estructuración en los **dos destinos**: caché en caliente en Upstash Redis y historial durable en Neon Postgres:
 ```mermaid
 graph TD
     subgraph Scheduler [APScheduler - Tareas de Fondo]
@@ -388,9 +388,9 @@ graph TD
         O --> P
     end
 
-    subgraph Upstash [Upstash Redis Cloud]
-        P --> Q[(String<br/>rates:binance / rates:bcv / rates:cop / rates:ars)]
-        P --> R[(Sorted Set ZSET<br/>history:rates:binance / bcv / cop / ars)]
+    subgraph Storage [Destinos Dual-write]
+        P --> Q[(Upstash Redis<br/>rates:* + history ZSET legacy)]
+        P --> R[(Neon Postgres<br/>rate_history durable)]
     end
 
     style L fill:#ffcdd2,stroke:#b71c1c,stroke-width:2px
@@ -409,11 +409,12 @@ sequenceDiagram
     actor Usuario as Cliente / Frontend
     participant API as FastAPI Backend (main.py)
     participant Redis as Upstash Redis (Caché)
+    participant DB as Neon Postgres (Historial)
 
     rect rgb(240, 248, 255)
-        note right of Usuario: Escenario A: Consulta de Tasas Actuales o Historial
-        Usuario->>API: GET /api/v1/rates/binance (o /history)
-        API->>Redis: redis_client.get("rates:binance") (o zrevrange)
+        note right of Usuario: Escenario A: Tasas Actuales
+        Usuario->>API: GET /api/v1/rates/binance
+        API->>Redis: redis_client.get("rates:binance")
         Redis-->>API: JSON Serializado de la Caché (< 2ms)
         API-->>Usuario: 200 OK - Respuesta de Tasas Inmediata
     end
@@ -425,6 +426,14 @@ sequenceDiagram
         Redis-->>API: Retorna JSON con tasas vigentes
         API->>API: Ejecutar lógica de negocio interna (to_ves y comparativa)
         API-->>Usuario: 200 OK - Opción Óptima y Ahorro Estimado
+    end
+
+    rect rgb(240, 255, 240)
+        note right of Usuario: Escenario C: Historial Paginado (v3)
+        Usuario->>API: GET /api/v3/rates/history/bcv?start_date=2026-06-01
+        API->>DB: COUNT + SELECT rate_history WHERE last_updated BETWEEN
+        DB-->>API: Filas del historial durable
+        API-->>Usuario: 200 OK - JSON paginado con metadatos
     end
 ```
 
