@@ -8,6 +8,8 @@ from abc import ABC, abstractmethod
 from bs4 import BeautifulSoup
 from datetime import datetime
 from app.database import redis_client as redis_db
+from app.database import AsyncSessionLocal
+from app.models import RateHistory
 from app.services import fetch_yadio_rate
 
 # Configuración de logs para monitorear los workers
@@ -54,6 +56,20 @@ class BaseRateWorker(ABC):
                 history_key = f"history:{self.redis_key}"
 
                 self.redis.zadd(history_key, {payload_json: timestamp})
+
+                # 3. Historial durable en Postgres (dual-write durante la migración)
+                try:
+                    if AsyncSessionLocal is not None:
+                        async with AsyncSessionLocal() as session:
+                            session.add(RateHistory(
+                                category=self.redis_key.replace("rates:", ""),
+                                source=payload["source"],
+                                last_updated=timestamp,
+                                rates=rates,
+                            ))
+                            await session.commit()
+                except Exception as e:
+                    logger.error(f"Error guardando historial en Postgres para {self.redis_key}: {e}")
 
                 logger.info(f"Successfully updated current rate and history for {self.redis_key}")
                 return payload
