@@ -186,22 +186,81 @@ def _rate_history_to_payload(row: RateHistory) -> dict:
 @app.get("/api/v3/rates/history/{category}", tags=["Historial"])
 async def get_rates_history_v3(
     category: Literal["bcv", "binance", "cop", "ars"],
-    page: int = Query(default=1, ge=1, description="Número de página"),
-    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
-    cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
-    date: Optional[date] = Query(None, description="Una sola fecha (YYYY-MM-DD) → TODAS las tasas de ese día. Excluye start_date/end_date"),
-    start_date: Optional[date] = Query(None, description="Filtro inicio (YYYY-MM-DD). Solo esta fecha → TODAS las tasas de ese día"),
-    end_date: Optional[date] = Query(None, description="Filtro fin (YYYY-MM-DD). Con start_date forma rango inclusivo de días completos")
+    page: int = Query(default=1, ge=1, description="Página que quieres (empieza en 1). Botones ← → del frontend"),
+    size: int = Query(default=50, ge=1, le=100, description="Cuántos registros traer por página (1 a 100)"),
+    cursor: Optional[str] = Query(None, description="Para scroll infinito: 'dame los que siguen después de esta fecha'. Copia el next_cursor de la respuesta anterior. Mutuamente excluyente con page"),
+    date: Optional[date] = Query(None, description="Una sola fecha (YYYY-MM-DD) → TODAS las tasas de ese día (00:00:00 a 23:59:59)"),
+    start_date: Optional[date] = Query(None, description="Inicio de rango (YYYY-MM-DD). Solo esta fecha → TODAS las tasas de ese día"),
+    end_date: Optional[date] = Query(None, description="Fin de rango (YYYY-MM-DD). Con start_date → rango inclusivo de días completos")
 ):
     """
-    Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
-    Versión 3 — incluye metadatos de paginación y cursor para scrolling infinito.
-    El historial se lee de Postgres (durable); Redis solo sirve la tasa actual.
+    Historial de tasas guardado en Postgres, del **más reciente al más antiguo**.
+    Nunca devuelve todo junto: usa paginación y trae pedazos.
 
-    Filtro por fecha (YYYY-MM-DD):
-    - `date` → TODAS las tasas de ese día completo (00:00:00 a 23:59:59).
-    - `start_date` solo → TODAS las tasas de ese día completo (00:00:00 a 23:59:59).
-    - `start_date` + `end_date` → rango inclusivo de días completos.
+    ## Cómo paginar (elige UNO de los dos estilos)
+
+    ### 1. page + size (botones ← →, la fácil)
+    `size` = cuántos registros por página. `page` = qué página lees.
+
+    ```
+    ?page=1&size=50   → los 50 más recientes
+    ?page=2&size=50   → los siguientes 50
+    ```
+
+    La respuesta devuelve `has_more` (¿hay más páginas?) y `total_records`
+    (total existente, para el contador "1-50 de 1200").
+
+    ### 2. cursor (scroll infinito, tipo Instagram)
+    Cada respuesta trae `next_cursor` — cópialo tal cual al siguiente request:
+
+    ```
+    1er:  ?size=50                          → next_cursor: "2026-06-15T14:30:00Z"
+    2do:  ?size=50&cursor=2026-06-15T14:30:00Z  → next_cursor: "2026-06-01T09:00:00Z"
+    3er:  ?size=50&cursor=2026-06-01T09:00:00Z  → has_more: false  ← fin, detén el scroll
+    ```
+
+    Regla: si `has_more == false` o `next_cursor == null`, no hay más.
+
+    ## Filtrar por fecha (YYYY-MM-DD)
+
+    ```
+    ?date=2026-06-01&size=100
+      → TODAS las tasas del 1 de junio (de 00:00:00 a 23:59:59)
+
+    ?start_date=2026-06-01&end_date=2026-06-03&size=100
+      → tasas del 1, 2 Y 3 de junio (el día final se incluye)
+
+    ?start_date=2026-01-01&end_date=2026-06-30&page=2&size=50
+      → 2da página del rango enero–junio (fecha + paginación combinadas)
+    ```
+
+    💡 Un día tiene máximo ~96 registros (4 fuentes × cada 15 min):
+    con `size=100` un día completo entra en UNA sola página.
+
+    ## Respuesta
+
+    ```json
+    {
+      "category": "bcv",
+      "page": 1,              ← página actual (te la devuelve)
+      "size": 50,             ← cuántos pediste
+      "total_records": 1200,  ← total existente (para el contador)
+      "has_more": true,       ← true = hay más, botón "siguiente" visible
+      "next_cursor": null,    ← se llena solo con scroll infinito
+      "history": [
+        { "source": "BCV", "last_updated": "2026-06-15T14:30:00.123456Z", "rates": {"USD": 45.20} }
+      ]
+    }
+    ```
+
+    ## Errores
+
+    | Código | Cuándo |
+    |---|---|
+    | 400 | `end_date` antes que `start_date`, o `date` mezclado con `start_date`/`end_date` |
+    | 400 | Cursor en formato inválido |
+    | 422 | Formato inválido: `page=0`, `size=200`, fecha que no es fecha |
+    | 503 | `DATABASE_URL` no configurado en el servidor |
     """
     if AsyncSessionLocal is None:
         raise HTTPException(status_code=503, detail="Historial no disponible: DATABASE_URL no configurado")
