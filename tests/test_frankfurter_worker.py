@@ -162,3 +162,58 @@ async def test_frankfurter_worker_full_run(mock_redis):
     assert result["rates"]["USD"] == 0.23204
     mock_redis.set.assert_called_once()
     mock_redis.zadd.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_frankfurter_worker_writes_history_postgres(mock_redis):
+    """Dual-write: además de Redis, el worker guarda la fila en Postgres."""
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json = MagicMock(return_value={
+        "date": "2026-07-29",
+        "base": "COP",
+        "quote": "VES",
+        "rate": 0.23204
+    })
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value.get = AsyncMock(return_value=mock_resp)
+
+    class FakeSession:
+        def __init__(self):
+            self.added = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def add(self, obj):
+            self.added.append(obj)
+
+        async def commit(self):
+            pass
+
+    fake_session = FakeSession()
+
+    class FakeFactory:
+        def __call__(self):
+            return fake_session
+
+    worker = FrankfurterWorker(fiat="COP", redis_key="rates:cop")
+    mock_redis.set = MagicMock(return_value=True)
+    mock_redis.zadd = MagicMock(return_value=1)
+    worker.redis = mock_redis
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch("app.scrapers.AsyncSessionLocal", FakeFactory()):
+        result = await worker.run()
+
+    assert result is not None
+    assert len(fake_session.added) == 1
+    row = fake_session.added[0]
+    assert row.category == "cop"
+    assert row.source == "Frankfurter"
+    assert row.rates["USD"] == 0.23204
+    assert isinstance(row.last_updated, float)

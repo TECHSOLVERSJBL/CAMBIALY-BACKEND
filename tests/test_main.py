@@ -39,15 +39,17 @@ async def test_calcular_missing_fields(client):
 
 
 @pytest.mark.asyncio
-async def test_get_rates_history_pagination(client):
-    from app.database import redis_client
-    import json
+async def test_get_rates_history_pagination(client, db_session_factory, monkeypatch):
+    from app.models import RateHistory
 
-    history_key = "history:rates:bcv"
-    for i in range(25):
-        ts = 1000 + i
-        payload = json.dumps({"rate": i, "ts": ts})
-        redis_client.zadd(history_key, {payload: ts})
+    monkeypatch.setattr("app.main.AsyncSessionLocal", db_session_factory)
+    rows = [
+        RateHistory(category="bcv", source="BCV", last_updated=float(1000 + i), rates={"USD": float(i)})
+        for i in range(25)
+    ]
+    async with db_session_factory() as session:
+        session.add_all(rows)
+        await session.commit()
 
     response = await client.get("/api/v2/rates/history/bcv?page=1&size=10")
     assert response.status_code == 200
@@ -95,64 +97,73 @@ async def test_get_ars_rate(client):
 
 
 @pytest.mark.asyncio
-async def test_history_single_date_returns_whole_day(client):
+async def test_history_single_date_returns_whole_day(client, db_session_factory, monkeypatch):
     """start_date solo → TODAS las tasas de ese día (00:00:00 a 23:59:59), sin filtrar por hora."""
-    from app.database import redis_client
+    from app.models import RateHistory
     from datetime import datetime, timezone
 
-    history_key = "history:rates:bcv"
-    day1 = datetime(2026, 6, 1, 8, 0, 0, tzinfo=timezone.utc)
-    day1_noon = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
-    day1_night = datetime(2026, 6, 1, 23, 30, 0, tzinfo=timezone.utc)
-    day2 = datetime(2026, 6, 2, 10, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("app.main.AsyncSessionLocal", db_session_factory)
 
-    for label, dt in [("a", day1), ("b", day1_noon), ("c", day1_night), ("d", day2)]:
-        ts = dt.timestamp()
-        redis_client.zadd(history_key, {json.dumps({"rate": label, "ts": ts}): ts})
+    def ts(y, m, d, h=0, mi=0):
+        return datetime(y, m, d, h, mi, 0, tzinfo=timezone.utc).timestamp()
+
+    rows = [
+        RateHistory(category="bcv", source="BCV", last_updated=ts(2026, 6, 1, 8, 0), rates={"USD": 1.0}),
+        RateHistory(category="bcv", source="BCV", last_updated=ts(2026, 6, 1, 12, 0), rates={"USD": 2.0}),
+        RateHistory(category="bcv", source="BCV", last_updated=ts(2026, 6, 1, 23, 30), rates={"USD": 3.0}),
+        RateHistory(category="bcv", source="BCV", last_updated=ts(2026, 6, 2, 10, 0), rates={"USD": 4.0}),
+    ]
+    async with db_session_factory() as session:
+        session.add_all(rows)
+        await session.commit()
 
     response = await client.get("/api/v2/rates/history/bcv?start_date=2026-06-01&size=100")
     assert response.status_code == 200
     data = response.json()
     assert data["total_records"] == 3
-    labels = {h["rate"] for h in data["history"]}
-    assert labels == {"a", "b", "c"}
+    assert [h["rates"]["USD"] for h in data["history"]] == [3.0, 2.0, 1.0]
 
 
 @pytest.mark.asyncio
-async def test_history_date_range_inclusive(client):
+async def test_history_date_range_inclusive(client, db_session_factory, monkeypatch):
     """start_date + end_date → rango inclusivo de días completos."""
-    from app.database import redis_client
+    from app.models import RateHistory
     from datetime import datetime, timezone
 
-    history_key = "history:rates:ars"  # categoría propia para aislar del estado compartido
-    days = [
-        datetime(2026, 6, 1, 10, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 6, 2, 10, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 6, 3, 10, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 6, 5, 10, 0, 0, tzinfo=timezone.utc),
+    monkeypatch.setattr("app.main.AsyncSessionLocal", db_session_factory)
+
+    def ts(y, m, d, h=0, mi=0):
+        return datetime(y, m, d, h, mi, 0, tzinfo=timezone.utc).timestamp()
+
+    rows = [
+        RateHistory(category="ars", source="Frankfurter", last_updated=ts(2026, 6, 1, 10, 0), rates={"USD": 1.0}),
+        RateHistory(category="ars", source="Frankfurter", last_updated=ts(2026, 6, 2, 10, 0), rates={"USD": 2.0}),
+        RateHistory(category="ars", source="Frankfurter", last_updated=ts(2026, 6, 3, 10, 0), rates={"USD": 3.0}),
+        RateHistory(category="ars", source="Frankfurter", last_updated=ts(2026, 6, 5, 10, 0), rates={"USD": 5.0}),
     ]
-    for i, dt in enumerate(days):
-        ts = dt.timestamp()
-        redis_client.zadd(history_key, {json.dumps({"rate": i, "ts": ts}): ts})
+    async with db_session_factory() as session:
+        session.add_all(rows)
+        await session.commit()
 
     response = await client.get("/api/v2/rates/history/ars?start_date=2026-06-01&end_date=2026-06-03&size=100")
     assert response.status_code == 200
     data = response.json()
     assert data["total_records"] == 3
-    labels = {h["rate"] for h in data["history"]}
-    assert labels == {0, 1, 2}
+    assert {h["rates"]["USD"] for h in data["history"]} == {1.0, 2.0, 3.0}
 
 
 @pytest.mark.asyncio
-async def test_history_date_range_invalid(client):
+async def test_history_date_range_invalid(client, db_session_factory, monkeypatch):
     """end_date antes que start_date → 400."""
+    monkeypatch.setattr("app.main.AsyncSessionLocal", db_session_factory)
     response = await client.get("/api/v2/rates/history/bcv?start_date=2026-06-05&end_date=2026-06-01")
     assert response.status_code == 400
 
 
 @pytest.mark.asyncio
-async def test_history_invalid_date_format(client):
+async def test_history_invalid_date_format(client, db_session_factory, monkeypatch):
     """Formato de fecha inválido → 422; ISO8601 completo se tolera (pydantic trunca a fecha)."""
+    monkeypatch.setattr("app.main.AsyncSessionLocal", db_session_factory)
     response = await client.get("/api/v2/rates/history/bcv?start_date=no-es-una-fecha")
     assert response.status_code == 422
 
