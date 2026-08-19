@@ -28,6 +28,7 @@
    * [3. ¿Qué sucede si tanto Binance como el servicio de contingencia (Yadio) fallan al mismo tiempo?](#3-qué-sucede-si-tanto-binance-como-el-servicio-de-contingencia-yadio-fallan-al-mismo-tiempo)
    * [4. ¿Por qué acoplar el Scheduler al Lifespan de FastAPI en lugar de usar un proceso independiente como Celery?](#4-por-qué-acoplar-el-scheduler-al-lifespan-de-fastapi-en-lugar-de-usar-un-proceso-independiente-como-celery)
    * [5. ¿Cómo se mitiga el envenenamiento de datos o la inserción de payloads corruptos en Redis?](#5-cómo-se-mitiga-el-envenenamiento-de-datos-o-la-inserción-de-payloads-corruptos-en-redis)
+   * [6. ¿Por qué `last_updated` se guarda como timestamp Unix (float) en lugar de `TIMESTAMPTZ`?](#6-por-qué-last_updated-se-guarda-como-timestamp-unix-float-en-lugar-de-timestamptz)
 
 <!-- TOC end -->
 
@@ -516,6 +517,22 @@ Al integrar `APScheduler` directamente en el `asynccontextmanager` de `lifespan`
 La aplicación implementa una validación estructural estricta en dos capas:
 1. **Validación del Scraping:** Antes de proceder con la serialización a JSON, los trabajadores verifican la existencia física de las claves esperadas en las respuestas de las APIs (`data`, `adv`, `price`). Si la estructura muta o falta un campo, se dispara el bloque `except` inmediato en lugar de persistir datos corruptos o nulos.
 2. **Validación de Tipos de Salida:** Las respuestas entregadas por `fetch_rate()` se fuerzan a cumplir con un contrato estricto de diccionarios con valores flotantes redondeados a dos decimales, garantizando consistencia matemática absoluta para la calculadora.
+
+<!-- TOC --><a name="6-por-qué-last_updated-se-guarda-como-timestamp-unix-float-en-lugar-de-timestamptz"></a>
+### 6. ¿Por qué `last_updated` se guarda como timestamp Unix (float) en lugar de `TIMESTAMPTZ`?
+Decisión deliberada por 3 razones:
+
+1. **Compatibilidad con el score ZSET existente:** Los workers ya guardaban `current_time.timestamp()` como score del Sorted Set (`app/scrapers.py`). Guardar la columna en el mismo formato permite que el **backfill** (`scripts/backfill.py`) migre los datos de Redis a Postgres **sin conversión** — el score viaja directo a `last_updated`. Con `TIMESTAMPTZ` cada fila habría requerido conversión datetime (riesgo de errores de timezone).
+
+2. **Portabilidad entre bases para los tests:** Los tests corren contra **SQLite in-memory** (`tests/conftest.py`) mientras producción usa **Postgres**. `TIMESTAMPTZ` se comporta distinto entre ambas (SQLite almacena strings, Postgres binario tz-aware), lo que haría las comparaciones de rango dependientes del motor. Un **float compara numéricamente idéntico en cualquier base**: `last_updated >= min AND <= max` es matemática pura.
+
+3. **Cero ambigüedad de timezone:** El epoch Unix es absoluto UTC — no hay duda de "¿UTC o local?" al almacenar. La zona horaria solo interviene en la **presentación**, donde el helper `_rate_history_to_payload` (`app/main.py`) convierte el float a ISO-8601 con sufijo `Z`.
+
+**Trade-offs asumidos:**
+* Menos legibilidad al inspeccionar la DB (`1780308000.0` en vez de `2026-06-01 00:00:00`).
+* Las consultas SQL con funciones de fecha requieren `to_timestamp(last_updated)` (Postgres lo soporta nativamente, por lo que agregados por día/mes siguen siendo posibles).
+
+Si en el futuro se necesita `date_trunc` pesado directamente en SQL, la columna se puede migrar a `TIMESTAMPTZ` con un `ALTER` + conversión one-shot.
 
 ---
 
