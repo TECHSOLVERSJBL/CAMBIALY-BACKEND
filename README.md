@@ -231,7 +231,7 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 ```
 
 <!-- TOC --><a name="v2-historial-paginado"></a>
-#### **7. Historial Paginado con Filtro por Fechas** — `GET /api/v2/rates/history/{category}`
+#### **7. Historial Paginado con Filtro por Fechas** — `GET /api/v3/rates/history/{category}`
 
 **Parámetros de Ruta:**
 
@@ -245,6 +245,7 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 |---|---|---|---|
 | `page` | `int` | 1 | **CAM-14:** Número de página (comienza en 1) |
 | `size` | `int` | 50 | **CAM-14:** Registros por página (máx 100) |
+| `date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Una sola fecha → **TODAS** las tasas de ese día completo. Excluye `start_date`/`end_date`. Ej: `2026-06-01` |
 | `start_date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Filtro inicio. Solo esta fecha → **TODAS** las tasas de ese día completo. Ej: `2026-06-01` |
 | `end_date` | `date` (YYYY-MM-DD) | `null` | **CAM-13:** Filtro fin. Con `start_date` forma rango inclusivo de días completos. Ej: `2026-06-03` |
 
@@ -268,9 +269,10 @@ Todos los endpoints V2 devuelven respuestas estandarizadas mediante `RateRespons
 
 **Comportamiento del filtro por fechas (CAM-13):**
 * El historial se lee de **Postgres (Neon)** — tabla `rate_history` (`category`, `source`, `last_updated` unix, `rates` JSONB), índice `(category, last_updated DESC)`. Redis queda solo para la tasa actual.
-* Sin `start_date` / `end_date` → cuenta total con `COUNT`, pagina con `ORDER BY last_updated DESC + OFFSET/LIMIT`.
-* `start_date` solo → **día completo**: `00:00:00` a `23:59:59` de esa fecha (`WHERE last_updated BETWEEN`). Ej: `?start_date=2026-06-01` trae TODAS las tasas del 1 de junio, sin importar la hora.
+* Sin `start_date` / `end_date` / `date` → cuenta total con `COUNT`, pagina con `ORDER BY last_updated DESC + OFFSET/LIMIT`.
+* `date` o `start_date` solo → **día completo**: `00:00:00` a `23:59:59` de esa fecha (`WHERE last_updated BETWEEN`). Ej: `?date=2026-06-01` o `?start_date=2026-06-01` trae TODAS las tasas del 1 de junio, sin importar la hora.
 * `start_date` + `end_date` → rango **inclusivo** de días completos: `start_date` desde las `00:00:00` y `end_date` hasta las `23:59:59`. Ej: `?start_date=2026-06-01&end_date=2026-06-03` trae las tasas del 1, 2 y 3 de junio.
+* `date` mezclado con `start_date`/`end_date` → `400 Bad Request`.
 * `end_date < start_date` → `400 Bad Request`.
 * Formato inválido → `422 Unprocessable Entity`. Se tolera ISO8601 completo (`2026-06-01T00:00:00Z` se trunca a `2026-06-01`).
 * Si no hay datos en el rango → `history` vacío, `total_records: 0`.
@@ -497,7 +499,7 @@ Para el alcance actual del proyecto, una base de datos relacional añadiría una
 * **Complejidad O(log(N) + M)** para recuperar rangos ordenados inversamente (con `ZREVRANGEBYSCORE`), ideal para paginación de gráficas.
 * **Deduplicación automática:** Si por algún desfase de red un proceso se ejecuta dos veces en el mismo segundo con el mismo payload, Redis no duplica la fila, sino que actualiza el score, manteniendo la base de datos limpia.
 
-> **Actualización:** El historial se migró a **Postgres (Neon)** — los ZSET siguen escribiéndose durante la transición (dual-write), pero la lectura del endpoint v2 viene de la tabla `rate_history` (durable, indexada, sin límite de RAM). Redis queda como caché de la tasa actual.
+> **Actualización:** El historial se migró a **Postgres (Neon)** — los ZSET siguen escribiéndose durante la transición (dual-write), pero la lectura del endpoint v3 viene de la tabla `rate_history` (durable, indexada, sin límite de RAM). Redis queda como caché de la tasa actual. (`/api/v2/rates/history/` quedó deprecado como alias.)
 
 <!-- TOC --><a name="3-qué-sucede-si-tanto-binance-como-el-servicio-de-contingencia-yadio-fallan-al-mismo-tiempo"></a>
 ### 3. ¿Qué sucede si tanto Binance como el servicio de contingencia (Yadio) fallan al mismo tiempo?

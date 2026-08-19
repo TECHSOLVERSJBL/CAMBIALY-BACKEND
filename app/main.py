@@ -183,27 +183,31 @@ def _rate_history_to_payload(row: RateHistory) -> dict:
     }
 
 
-@app.get("/api/v2/rates/history/{category}", tags=["Historial"])
-async def get_rates_history_v2(
+@app.get("/api/v3/rates/history/{category}", tags=["Historial"])
+async def get_rates_history_v3(
     category: Literal["bcv", "binance", "cop", "ars"],
     page: int = Query(default=1, ge=1, description="Número de página"),
     size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
     cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
+    date: Optional[date] = Query(None, description="Una sola fecha (YYYY-MM-DD) → TODAS las tasas de ese día. Excluye start_date/end_date"),
     start_date: Optional[date] = Query(None, description="Filtro inicio (YYYY-MM-DD). Solo esta fecha → TODAS las tasas de ese día"),
     end_date: Optional[date] = Query(None, description="Filtro fin (YYYY-MM-DD). Con start_date forma rango inclusivo de días completos")
 ):
     """
     Obtiene los **últimos registros históricos** de tasas con paginación por cursor o por páginas.
-    Versión 2 — incluye metadatos de paginación y cursor para scrolling infinito.
+    Versión 3 — incluye metadatos de paginación y cursor para scrolling infinito.
     El historial se lee de Postgres (durable); Redis solo sirve la tasa actual.
 
     Filtro por fecha (YYYY-MM-DD):
+    - `date` → TODAS las tasas de ese día completo (00:00:00 a 23:59:59).
     - `start_date` solo → TODAS las tasas de ese día completo (00:00:00 a 23:59:59).
     - `start_date` + `end_date` → rango inclusivo de días completos.
     """
     if AsyncSessionLocal is None:
         raise HTTPException(status_code=503, detail="Historial no disponible: DATABASE_URL no configurado")
-    logger.info(f"[API V2 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
+    if date and (start_date or end_date):
+        raise HTTPException(status_code=400, detail="date es mutuamente excluyente con start_date/end_date")
+    logger.info(f"[API V3 History] Req category={category}, page={page}, size={size}, cursor={cursor}")
 
     async with AsyncSessionLocal() as session:
         if cursor:
@@ -213,7 +217,7 @@ async def get_rates_history_v2(
                 else:
                     max_ts = float(cursor)
             except Exception as err:
-                logger.error(f"[API V2 History] Error parsing cursor '{cursor}': {err}")
+                logger.error(f"[API V3 History] Error parsing cursor '{cursor}': {err}")
                 raise HTTPException(status_code=400, detail="Formato de cursor inválido")
 
             total_records = (
@@ -230,7 +234,11 @@ async def get_rates_history_v2(
         else:
             offset = (page - 1) * size
             stmt = select(RateHistory).where(RateHistory.category == category)
-            if start_date or end_date:
+            if date:
+                min_ts = datetime_to_unix(datetime.combine(date, datetime.min.time()))
+                max_ts = datetime_to_unix(datetime.combine(date, datetime.max.time()))
+                stmt = stmt.where(RateHistory.last_updated >= min_ts, RateHistory.last_updated <= max_ts)
+            elif start_date or end_date:
                 if start_date and end_date and end_date < start_date:
                     raise HTTPException(status_code=400, detail="end_date debe ser mayor o igual que start_date")
                 min_ts = datetime_to_unix(datetime.combine(start_date, datetime.min.time())) if start_date else 0
@@ -249,7 +257,7 @@ async def get_rates_history_v2(
 
     parsed = [_rate_history_to_payload(row) for row in rows]
     next_cursor = parsed[-1].get("last_updated") if (has_more and parsed) else None
-    logger.info(f"[API V2 History] Page query returned {len(parsed)} items. total_records={total_records}, next_cursor={next_cursor}, has_more={has_more}")
+    logger.info(f"[API V3 History] Page query returned {len(parsed)} items. total_records={total_records}, next_cursor={next_cursor}, has_more={has_more}")
 
     return {
         "category": category,
@@ -260,6 +268,20 @@ async def get_rates_history_v2(
         "has_more": has_more,
         "history": parsed
     }
+
+
+@app.get("/api/v2/rates/history/{category}", tags=["Historial"], deprecated=True)
+async def get_rates_history_v2_legacy(
+    category: Literal["bcv", "binance", "cop", "ars"],
+    page: int = Query(default=1, ge=1, description="Número de página"),
+    size: int = Query(default=50, ge=1, le=100, description="Registros por página (máx 100)"),
+    cursor: Optional[str] = Query(None, description="Cursor de paginación (ISO8601 o timestamp Unix)"),
+    date: Optional[date] = Query(None, description="DEPRECADO — usa v3. Una sola fecha (YYYY-MM-DD)"),
+    start_date: Optional[date] = Query(None, description="DEPRECADO — usa v3. Filtro inicio (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="DEPRECADO — usa v3. Filtro fin (YYYY-MM-DD)")
+):
+    """Deprecado — usa `GET /api/v3/rates/history/{category}`. Misma lógica, se mantiene por compatibilidad."""
+    return await get_rates_history_v3(category, page, size, cursor, date, start_date, end_date)
 
 
 security = HTTPBasic()
