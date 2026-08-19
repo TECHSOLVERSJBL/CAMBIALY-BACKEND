@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, status, Depends, APIRouter
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.exceptions import StarletteHTTPException
 from app.schemas import CalculationRequest, RateResponseDTO, RateHistoricalDTO
 from app.database import redis_client, AsyncSessionLocal
@@ -577,11 +577,33 @@ async def get_ars_rate(
 app.include_router(rates_router_v2)
 
 
+@app.get("/scalar", include_in_schema=False, tags=["Sistema"])
+async def scalar_docs():
+    """Documentación interactiva de la API (Scalar UI — moderna, con temas y ejemplos).
+    Alternativa visual a Swagger (/docs). Sirve el mismo OpenAPI de /openapi.json."""
+    return HTMLResponse("""
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Cambialy API — Documentación (Scalar)</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>body { margin: 0; }</style>
+      </head>
+      <body>
+        <script id="api-reference" data-url="/openapi.json"></script>
+        <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+      </body>
+    </html>
+    """)
+
+
 @app.get("/", tags=["Sistema"])
 async def root():
     return {
-        "message": "Bienvenido a la API de Cambialy. Consulta /docs para ver la documentación completa.",
+        "message": "Bienvenido a la API de Cambialy. Consulta /docs o /scalar para ver la documentación completa.",
         "docs": "/docs",
+        "scalar": "/scalar",
         "status": "healthy",
         "disclaimer": ("""
                ⚖️ **Descargo de Responsabilidad / Disclaimer**
